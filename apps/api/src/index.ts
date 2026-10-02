@@ -171,6 +171,13 @@ function stableJson(value: unknown): string {
   return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + stableJson(obj[key])).join(",") + "}";
 }
 
+function fromBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, ch => ch.charCodeAt(0));
+}
+
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -840,6 +847,53 @@ async function getReceipt(env: Env, projectId: string, receiptId: string) {
   return rows[0] ?? null;
 }
 
+function expectedSignedReceiptPayload(receipt: Record<string, any>): Record<string, unknown> {
+  return {
+    receiptId: String(receipt.id),
+    projectId: String(receipt.project_id),
+    authorizationRequestId: receipt.authorization_request_id ? String(receipt.authorization_request_id) : null,
+    parentReceiptId: receipt.parent_receipt_id ? String(receipt.parent_receipt_id) : null,
+    agentId: String(receipt.agent_id),
+    environmentId: receipt.environment_id ? String(receipt.environment_id) : null,
+    action: String(receipt.action),
+    scope: (receipt.scope ?? {}) as Record<string, unknown>,
+    issuedBy: String(receipt.issued_by),
+    issuedAt: String(receipt.issued_at),
+    expiresAt: String(receipt.expires_at)
+  };
+}
+
+async function verifyStoredReceiptSignature(env: Env, receipt: Record<string, any>): Promise<boolean> {
+  if (!receipt.signature) return true;
+  if (
+    receipt.signature_algorithm !== "ES256" ||
+    !receipt.signed_payload ||
+    !receipt.signing_key_id
+  ) return false;
+
+  const material = await signingMaterial(env);
+  if (!material) return false;
+  if (receipt.signing_key_id !== material.keyId) return false;
+
+  const expected = expectedSignedReceiptPayload(receipt);
+  if (stableJson(expected) !== stableJson(receipt.signed_payload)) return false;
+
+  const publicKey = await crypto.subtle.importKey(
+    "jwk",
+    material.publicJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    publicKey,
+    fromBase64Url(String(receipt.signature)),
+    new TextEncoder().encode(stableJson(receipt.signed_payload))
+  );
+}
+
 function receiptState(receipt: Record<string, any>) {
   if (receipt.revoked_at) return "revoked";
   if (new Date(String(receipt.expires_at)).getTime() <= Date.now()) return "expired";
@@ -966,6 +1020,10 @@ async function verifyAuthorityReceipt(
 
   const receipt = await getReceipt(env, auth.projectId, input.receiptId.trim());
   if (!receipt) return deny("receipt_not_found");
+
+  if (receipt.signature && !(await verifyStoredReceiptSignature(env, receipt))) {
+    return deny("signature_invalid", receipt);
+  }
 
   const chain = await receiptChainIsActive(env, auth.projectId, receipt);
   if (!chain.active) return deny(chain.reason || "receipt_not_active", receipt);
