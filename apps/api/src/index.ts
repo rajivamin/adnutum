@@ -33,6 +33,17 @@ interface HumanDecisionInput {
   note?: string;
 }
 
+interface DelegateReceiptInput {
+  delegateToAgentId?: string;
+  expiresAt?: string;
+  issuedBy?: string;
+}
+
+interface RevokeReceiptInput {
+  revokedBy?: string;
+  reason?: string;
+}
+
 interface RefundPolicy {
   automaticBelow: number;
   managerThrough: number;
@@ -519,6 +530,16 @@ async function persistAuthorization(
     });
   } else if (result.decision === "allow") {
     await addAuditEvent(env, auth.projectId, id, "authorization_issued");
+    const receipt = await issueAuthorityReceipt(env, {
+      projectId: auth.projectId,
+      requestId: id,
+      agentId,
+      environmentId: auth.environmentId,
+      action: input.action!,
+      scope: input as unknown as Record<string, unknown>,
+      issuedBy: "policy_engine"
+    });
+    await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
   } else {
     await addAuditEvent(env, auth.projectId, id, "action_blocked");
   }
@@ -620,7 +641,146 @@ async function recordHumanDecision(
     input.decision === "approved" ? "authorization_issued" : "action_blocked"
   );
 
-  return { requestId: `req_${id}`, decision: input.decision, status: 200 };
+  let receipt = null;
+  if (input.decision === "approved") {
+    const requestRow = existing.request as Record<string, any>;
+    const payload = (requestRow.payload ?? {}) as Record<string, unknown>;
+    receipt = await issueAuthorityReceipt(env, {
+      projectId,
+      requestId: id,
+      agentId: String(requestRow.agent_id),
+      environmentId: requestRow.environment_id ? String(requestRow.environment_id) : null,
+      action: String(requestRow.action),
+      scope: payload,
+      issuedBy: input.decidedBy?.trim() || "human"
+    });
+    await addAuditEvent(env, projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
+  }
+
+  return { requestId: `req_${id}`, decision: input.decision, receipt, status: 200 };
+}
+
+
+function receiptExpiry(minutes = 15): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+async function issueAuthorityReceipt(
+  env: Env,
+  params: {
+    projectId: string;
+    requestId?: string | null;
+    parentReceiptId?: string | null;
+    agentId: string;
+    environmentId?: string | null;
+    action: string;
+    scope: Record<string, unknown>;
+    issuedBy: string;
+    expiresAt?: string;
+  }
+) {
+  const created = await db<Array<Record<string, unknown>>>(env, "authority_receipts?select=*", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      project_id: params.projectId,
+      authorization_request_id: params.requestId ?? null,
+      parent_receipt_id: params.parentReceiptId ?? null,
+      agent_id: params.agentId,
+      environment_id: params.environmentId ?? null,
+      action: params.action,
+      scope: params.scope,
+      issued_by: params.issuedBy,
+      expires_at: params.expiresAt ?? receiptExpiry(15)
+    })
+  });
+
+  if (!created[0]?.id) throw new Error("Authority receipt could not be created.");
+  return created[0];
+}
+
+async function listReceipts(env: Env, projectId: string) {
+  const query = new URLSearchParams({
+    project_id: `eq.${projectId}`,
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),parent:authority_receipts!parent_receipt_id(id,action,expires_at)",
+    order: "issued_at.desc",
+    limit: "100"
+  });
+  return db<Array<Record<string, unknown>>>(env, `authority_receipts?${query.toString()}`);
+}
+
+async function getReceipt(env: Env, projectId: string, receiptId: string) {
+  const query = new URLSearchParams({
+    id: `eq.${receiptId}`,
+    project_id: `eq.${projectId}`,
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),parent:authority_receipts!parent_receipt_id(id,action,expires_at)",
+    limit: "1"
+  });
+  const rows = await db<Array<Record<string, any>>>(env, `authority_receipts?${query.toString()}`);
+  return rows[0] ?? null;
+}
+
+function receiptState(receipt: Record<string, any>) {
+  if (receipt.revoked_at) return "revoked";
+  if (new Date(String(receipt.expires_at)).getTime() <= Date.now()) return "expired";
+  return "active";
+}
+
+async function delegateReceipt(
+  env: Env,
+  projectId: string,
+  receiptId: string,
+  input: DelegateReceiptInput
+) {
+  const parent = await getReceipt(env, projectId, receiptId);
+  if (!parent) return { error: "receipt_not_found", status: 404 };
+  if (receiptState(parent) !== "active") return { error: "receipt_not_active", status: 409 };
+  if (!input.delegateToAgentId?.trim()) return { error: "delegateToAgentId_required", status: 400 };
+
+  const delegateAgentId = await ensureAgent(env, projectId, input.delegateToAgentId.trim());
+  const requestedExpiry = input.expiresAt ? new Date(input.expiresAt) : new Date(String(parent.expires_at));
+  if (!Number.isFinite(requestedExpiry.getTime())) return { error: "invalid_expiresAt", status: 400 };
+
+  const parentExpiry = new Date(String(parent.expires_at)).getTime();
+  const childExpiry = Math.min(requestedExpiry.getTime(), parentExpiry);
+  if (childExpiry <= Date.now()) return { error: "delegation_expiry_must_be_future", status: 400 };
+
+  const child = await issueAuthorityReceipt(env, {
+    projectId,
+    parentReceiptId: String(parent.id),
+    agentId: delegateAgentId,
+    environmentId: parent.environment_id ? String(parent.environment_id) : null,
+    action: String(parent.action),
+    scope: (parent.scope ?? {}) as Record<string, unknown>,
+    issuedBy: input.issuedBy?.trim() || String(parent.agent?.external_key || parent.issued_by || "delegator"),
+    expiresAt: new Date(childExpiry).toISOString()
+  });
+
+  return { receipt: child, status: 201 };
+}
+
+async function revokeReceipt(
+  env: Env,
+  projectId: string,
+  receiptId: string,
+  input: RevokeReceiptInput
+) {
+  const existing = await getReceipt(env, projectId, receiptId);
+  if (!existing) return { error: "receipt_not_found", status: 404 };
+  if (existing.revoked_at) return { error: "receipt_already_revoked", status: 409 };
+
+  const query = new URLSearchParams({ id: `eq.${receiptId}`, project_id: `eq.${projectId}` });
+  await db(env, `authority_receipts?${query.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      revoked_at: new Date().toISOString(),
+      revoked_by: input.revokedBy?.trim() || "control-plane-owner",
+      revocation_reason: input.reason?.trim() || "Revoked by operator."
+    })
+  });
+
+  return { id: receiptId, revoked: true, status: 200 };
 }
 
 async function listApiKeys(env: Env, projectId: string) {
@@ -688,7 +848,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.5.0",
+        version: "0.6.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
       });
@@ -793,6 +953,45 @@ export default {
 
         const result = await evaluateAction(env, auth.projectId, input);
         return json(await persistAuthorization(env, auth, input, result));
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/receipts") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const receipts = await listReceipts(env, env.DEFAULT_PROJECT_ID);
+        return json({
+          receipts: receipts.map(r => ({ ...r, state: receiptState(r as Record<string, any>) }))
+        });
+      }
+
+      const receiptMatch = url.pathname.match(/^\/v1\/receipts\/([^/]+)$/);
+      if (request.method === "GET" && receiptMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const receipt = await getReceipt(env, env.DEFAULT_PROJECT_ID, receiptMatch[1]);
+        return receipt
+          ? json({ receipt: { ...receipt, state: receiptState(receipt) } })
+          : json({ error: "receipt_not_found" }, 404);
+      }
+
+      const delegateMatch = url.pathname.match(/^\/v1\/receipts\/([^/]+)\/delegate$/);
+      if (request.method === "POST" && delegateMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        let input: DelegateReceiptInput;
+        try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+        const result = await delegateReceipt(env, env.DEFAULT_PROJECT_ID, delegateMatch[1], input);
+        return json(result, "status" in result ? result.status : 200);
+      }
+
+      const revokeReceiptMatch = url.pathname.match(/^\/v1\/receipts\/([^/]+)\/revoke$/);
+      if (request.method === "POST" && revokeReceiptMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        let input: RevokeReceiptInput;
+        try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+        const result = await revokeReceipt(env, env.DEFAULT_PROJECT_ID, revokeReceiptMatch[1], input);
+        return json(result, "status" in result ? result.status : 200);
       }
 
       const requestMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)$/);

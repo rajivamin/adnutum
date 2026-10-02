@@ -39,6 +39,35 @@ export interface HumanDecisionInput {
   note?: string;
 }
 
+export interface AuthorityReceipt {
+  id: string;
+  project_id: string;
+  authorization_request_id?: string | null;
+  parent_receipt_id?: string | null;
+  agent_id: string;
+  environment_id?: string | null;
+  action: string;
+  scope: Record<string, unknown>;
+  issued_by: string;
+  issued_at: string;
+  expires_at: string;
+  revoked_at?: string | null;
+  revoked_by?: string | null;
+  revocation_reason?: string | null;
+  state?: "active" | "expired" | "revoked";
+}
+
+export interface DelegateReceiptInput {
+  delegateToAgentId: string;
+  expiresAt?: string;
+  issuedBy?: string;
+}
+
+export interface RevokeReceiptInput {
+  revokedBy?: string;
+  reason?: string;
+}
+
 export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
@@ -81,6 +110,30 @@ export class AdNutum {
         method: "POST",
         body: JSON.stringify(input)
       }
+    );
+  }
+
+  async listReceipts() {
+    return this.request<{ receipts: AuthorityReceipt[] }>("/v1/receipts");
+  }
+
+  async getReceipt(receiptId: string) {
+    return this.request<{ receipt: AuthorityReceipt }>(
+      `/v1/receipts/${encodeURIComponent(receiptId)}`
+    );
+  }
+
+  async delegateReceipt(receiptId: string, input: DelegateReceiptInput) {
+    return this.request<{ receipt: AuthorityReceipt }>(
+      `/v1/receipts/${encodeURIComponent(receiptId)}/delegate`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+  }
+
+  async revokeReceipt(receiptId: string, input: RevokeReceiptInput = {}) {
+    return this.request<{ id: string; revoked: boolean }>(
+      `/v1/receipts/${encodeURIComponent(receiptId)}/revoke`,
+      { method: "POST", body: JSON.stringify(input) }
     );
   }
 
