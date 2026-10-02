@@ -83,7 +83,7 @@ export default {
     if (request.method === "OPTIONS") return json({ ok: true });
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, service: "authority-layer-api", version: "0.1.0" });
+      return json({ ok: true, service: "adnutum-api", version: "0.1.0" });
     }
 
     if (request.method === "POST" && url.pathname === "/v1/authorize") {
