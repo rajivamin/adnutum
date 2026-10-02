@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.2 Persistence
+# AD NŪTUM — v0.3 Control Plane
 
 **Authorization infrastructure for AI agents.**
 
@@ -10,29 +10,35 @@ An agent asks whether it may act. AD NŪTUM evaluates policy and returns one of 
 - `deny`
 - `approval_required`
 
-v0.2 makes that lifecycle durable. Authorization requests, human decisions, and audit events are persisted in Supabase instead of disappearing when a process ends.
+v0.3 adds the first human-usable Control Plane on top of the durable v0.2 backend.
 
-## v0.2 goal
+## v0.3 goal
 
-Prove one complete durable loop:
+Replace PowerShell and raw database inspection with an operator cockpit that can:
 
-1. Agent proposes an action.
-2. Policy engine evaluates it.
-3. The authorization request is persisted.
-4. Low-risk actions are allowed.
-5. Prohibited actions are denied.
-6. Higher-risk actions require human approval.
-7. Human approval or rejection is persisted.
-8. Every material step is appended to the audit ledger.
-9. The request can be retrieved later with its approval and audit history.
+1. See authorization requests and their current state.
+2. Open a request and inspect its evidence.
+3. Approve or reject requests that require human judgment.
+4. Read the audit trail.
+5. Register agent identities.
+6. Edit the live refund authority thresholds.
+7. Create test authorization requests from the browser.
 
-## Repository layout
+## Control Plane
 
-- `apps/api` — Cloudflare Worker-style authorization API
-- `apps/demo` — zero-build browser playground
-- `packages/sdk` — TypeScript SDK developers can embed
-- `supabase/schema.sql` — durable hosted-control-plane data model
-- `docs/architecture.md` — product and architecture notes
+The Worker root path serves the Control Plane:
+
+`GET /`
+
+The browser asks for a Control Plane token and sends it in:
+
+`x-control-plane-token`
+
+The token is stored only in browser session storage.
+
+Control Plane routes such as request listings, decisions, agents, and policy editing require that token. The agent-facing authorization route remains separate:
+
+`POST /v1/authorize`
 
 ## Core API
 
@@ -53,70 +59,75 @@ Prove one complete durable loop:
 }
 ```
 
-Example response:
+### List requests
 
-```json
-{
-  "decision": "approval_required",
-  "policyId": "refund-threshold-default",
-  "reason": "Refunds above $1,000 require owner approval.",
-  "requestId": "req_..."
-}
-```
+`GET /v1/requests`
 
-### Record the human decision
+Requires the Control Plane token.
 
-`POST /v1/requests/:requestId/decision`
-
-```json
-{
-  "decision": "approved",
-  "decidedBy": "owner",
-  "note": "Duplicate charge verified."
-}
-```
-
-### Retrieve the durable record
+### Inspect a request
 
 `GET /v1/requests/:requestId`
 
-Returns the authorization request, approval decisions, and ordered audit events.
+Requires the Control Plane token.
 
-## Default demo policy
+### Record a human decision
 
-- Under $100 → allow
-- $100–$1,000 → approval required from manager
-- Above $1,000 → approval required from owner
-- Missing or non-positive amount → deny
+`POST /v1/requests/:requestId/decision`
 
-## Supabase setup
+Requires the Control Plane token.
 
-Run `supabase/schema.sql` in the Supabase SQL editor, then create one project row:
+### Manage agents
 
-```sql
-insert into projects (name)
-values ('AD NŪTUM Demo')
-returning id;
-```
+`GET /v1/agents`
 
-Keep the returned UUID. The API requires three server-side environment values:
+`POST /v1/agents`
+
+Require the Control Plane token.
+
+### Read or update the refund policy
+
+`GET /v1/policies/refund_customer`
+
+`PUT /v1/policies/refund_customer`
+
+Require the Control Plane token.
+
+## Runtime variables
+
+The Cloudflare Worker requires:
 
 - `SUPABASE_URL`
 - `SUPABASE_SECRET_KEY`
 - `DEFAULT_PROJECT_ID`
+- `CONTROL_PLANE_TOKEN`
 
 **Never expose the Supabase secret key in browser code or commit it to GitHub.**
 
 For local development, copy `apps/api/.dev.vars.example` to `apps/api/.dev.vars` and fill in your own values. `.dev.vars` is ignored by Git.
 
-## What is intentionally NOT in v0.2
+## Repository layout
 
-- Billing
-- OAuth
-- production API-key authentication
-- notifications
-- real Stripe refunds
-- organization/team management
-- production-grade cryptographic authorization tokens
+- `apps/api` — Cloudflare Worker API + Control Plane
+- `apps/api/src/control-plane.ts` — browser Control Plane
+- `apps/demo` — original zero-build v0.1 playground
+- `packages/sdk` — TypeScript SDK
+- `supabase/schema.sql` — durable hosted-control-plane data model
+- `docs/architecture.md` — product and architecture notes
 
-Those remain outside the build until the durable authorization loop is proven.
+## Default demo policy
+
+The first live policy remains intentionally narrow:
+
+- Under $100 → allow
+- $100–$1,000 → manager approval
+- Above $1,000 → owner approval
+- Missing or non-positive amount → deny
+
+In v0.3 those thresholds are now stored in Supabase and editable from the Control Plane.
+
+## Security boundary
+
+v0.3 is a protected demo environment, not production IAM.
+
+The Control Plane token protects operator routes, while the Supabase secret remains server-side inside Cloudflare. Production API keys, OAuth, RBAC, signed authorization tokens, rate limiting, and organization-level identity remain future milestones.
