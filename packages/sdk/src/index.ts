@@ -27,6 +27,7 @@ export interface HumanDecisionInput {
 export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
+  controlPlaneToken?: string;
 }
 
 export class AdNutum {
@@ -38,6 +39,7 @@ export class AdNutum {
       headers: {
         "content-type": "application/json",
         ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
+        ...(this.options.controlPlaneToken ? { "x-control-plane-token": this.options.controlPlaneToken } : {}),
         ...(init.headers ?? {})
       }
     });

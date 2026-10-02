@@ -1,7 +1,10 @@
+import { CONTROL_PLANE_HTML } from "./control-plane";
+
 interface Env {
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
   DEFAULT_PROJECT_ID: string;
+  CONTROL_PLANE_TOKEN: string;
 }
 
 type Decision = "allow" | "deny" | "approval_required";
@@ -30,63 +33,43 @@ interface HumanDecisionInput {
   note?: string;
 }
 
+interface RefundPolicy {
+  automaticBelow: number;
+  managerThrough: number;
+}
+
+const DEFAULT_REFUND_POLICY: RefundPolicy = {
+  automaticBelow: 100,
+  managerThrough: 1000
+};
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type, authorization",
-      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers": "content-type, authorization, x-control-plane-token",
+      "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
       "cache-control": "no-store"
     }
   });
-
-function evaluateRefund(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
-  const amount = input.amount;
-  const createdAt = new Date().toISOString();
-
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-    return {
-      decision: "deny",
-      policyId: "refund-threshold-default",
-      reason: "Refund amount must be a positive number.",
-      createdAt
-    };
-  }
-
-  if (amount < 100) {
-    return {
-      decision: "allow",
-      policyId: "refund-threshold-default",
-      reason: "Refund is below the $100 automatic authorization threshold.",
-      createdAt
-    };
-  }
-
-  if (amount <= 1000) {
-    return {
-      decision: "approval_required",
-      policyId: "refund-threshold-default",
-      reason: "Refunds from $100 through $1,000 require manager approval.",
-      requiredApprover: "manager",
-      createdAt
-    };
-  }
-
-  return {
-    decision: "approval_required",
-    policyId: "refund-threshold-default",
-    reason: "Refunds above $1,000 require owner approval.",
-    requiredApprover: "owner",
-    createdAt
-  };
-}
 
 function assertConfigured(env: Env) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY || !env.DEFAULT_PROJECT_ID) {
     throw new Error("AD NŪTUM persistence is not configured.");
   }
+}
+
+function isControlPlaneAuthorized(request: Request, env: Env): boolean {
+  const supplied = request.headers.get("x-control-plane-token");
+  return Boolean(env.CONTROL_PLANE_TOKEN && supplied && supplied === env.CONTROL_PLANE_TOKEN);
+}
+
+function controlPlaneRequired(request: Request, env: Env): Response | null {
+  return isControlPlaneAuthorized(request, env)
+    ? null
+    : json({ error: "control_plane_unauthorized" }, 401);
 }
 
 async function db<T>(
@@ -112,7 +95,108 @@ async function db<T>(
   return (text ? JSON.parse(text) : null) as T;
 }
 
-async function ensureAgent(env: Env, externalKey: string): Promise<string> {
+async function getRefundPolicy(env: Env): Promise<{ id: string; rule: RefundPolicy }> {
+  const query = new URLSearchParams({
+    project_id: `eq.${env.DEFAULT_PROJECT_ID}`,
+    action: "eq.refund_customer",
+    is_active: "eq.true",
+    select: "id,rule",
+    limit: "1"
+  });
+
+  const existing = await db<Array<{ id: string; rule: Partial<RefundPolicy> }>>(
+    env,
+    `policies?${query.toString()}`
+  );
+
+  if (existing[0]?.id) {
+    return {
+      id: existing[0].id,
+      rule: {
+        automaticBelow: Number(existing[0].rule?.automaticBelow ?? DEFAULT_REFUND_POLICY.automaticBelow),
+        managerThrough: Number(existing[0].rule?.managerThrough ?? DEFAULT_REFUND_POLICY.managerThrough)
+      }
+    };
+  }
+
+  const created = await db<Array<{ id: string; rule: RefundPolicy }>>(
+    env,
+    "policies?select=id,rule",
+    {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({
+        project_id: env.DEFAULT_PROJECT_ID,
+        name: "Refund threshold policy",
+        action: "refund_customer",
+        rule: DEFAULT_REFUND_POLICY,
+        is_active: true
+      })
+    }
+  );
+
+  if (!created[0]?.id) throw new Error("Default refund policy could not be created.");
+  return created[0];
+}
+
+async function updateRefundPolicy(env: Env, rule: RefundPolicy) {
+  const current = await getRefundPolicy(env);
+  const query = new URLSearchParams({ id: `eq.${current.id}` });
+
+  await db(env, `policies?${query.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ rule })
+  });
+
+  return { id: current.id, action: "refund_customer", rule };
+}
+
+function evaluateRefund(
+  input: AuthorizeInput,
+  policy: { id: string; rule: RefundPolicy }
+): Omit<AuthorizationResult, "requestId"> {
+  const amount = input.amount;
+  const createdAt = new Date().toISOString();
+
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    return {
+      decision: "deny",
+      policyId: policy.id,
+      reason: "Refund amount must be a positive number.",
+      createdAt
+    };
+  }
+
+  if (amount < policy.rule.automaticBelow) {
+    return {
+      decision: "allow",
+      policyId: policy.id,
+      reason: `Refund is below the $${policy.rule.automaticBelow.toLocaleString()} automatic authorization threshold.`,
+      createdAt
+    };
+  }
+
+  if (amount <= policy.rule.managerThrough) {
+    return {
+      decision: "approval_required",
+      policyId: policy.id,
+      reason: `Refunds from $${policy.rule.automaticBelow.toLocaleString()} through $${policy.rule.managerThrough.toLocaleString()} require manager approval.`,
+      requiredApprover: "manager",
+      createdAt
+    };
+  }
+
+  return {
+    decision: "approval_required",
+    policyId: policy.id,
+    reason: `Refunds above $${policy.rule.managerThrough.toLocaleString()} require owner approval.`,
+    requiredApprover: "owner",
+    createdAt
+  };
+}
+
+async function ensureAgent(env: Env, externalKey: string, name?: string): Promise<string> {
   const projectId = env.DEFAULT_PROJECT_ID;
   const query = new URLSearchParams({
     project_id: `eq.${projectId}`,
@@ -130,7 +214,7 @@ async function ensureAgent(env: Env, externalKey: string): Promise<string> {
     body: JSON.stringify({
       project_id: projectId,
       external_key: externalKey,
-      name: externalKey
+      name: name?.trim() || externalKey
     })
   });
 
@@ -207,7 +291,7 @@ async function getRequest(env: Env, rawId: string) {
   const requestQuery = new URLSearchParams({
     id: `eq.${id}`,
     project_id: `eq.${env.DEFAULT_PROJECT_ID}`,
-    select: "*",
+    select: "*,agent:agents(external_key,name)",
     limit: "1"
   });
   const approvalQuery = new URLSearchParams({
@@ -229,6 +313,27 @@ async function getRequest(env: Env, rawId: string) {
 
   if (!requests[0]) return null;
   return { request: requests[0], approvals, events };
+}
+
+async function listRequests(env: Env, limit: number) {
+  const query = new URLSearchParams({
+    project_id: `eq.${env.DEFAULT_PROJECT_ID}`,
+    select: "*,agent:agents(external_key,name),approval_decisions(decision,decided_by,created_at)",
+    order: "created_at.desc",
+    limit: String(limit)
+  });
+
+  return db<Array<Record<string, unknown>>>(env, `authorization_requests?${query.toString()}`);
+}
+
+async function listAgents(env: Env) {
+  const query = new URLSearchParams({
+    project_id: `eq.${env.DEFAULT_PROJECT_ID}`,
+    select: "id,external_key,name,created_at",
+    order: "created_at.asc"
+  });
+
+  return db<Array<Record<string, unknown>>>(env, `agents?${query.toString()}`);
 }
 
 async function recordHumanDecision(
@@ -289,19 +394,78 @@ export default {
 
     if (request.method === "OPTIONS") return json({ ok: true });
 
+    if (request.method === "GET" && url.pathname === "/") {
+      return new Response(CONTROL_PLANE_HTML, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store"
+        }
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.2.0",
+        version: "0.3.0",
         persistence: Boolean(
           env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID
-        )
+        ),
+        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
       });
     }
 
     try {
       assertConfigured(env);
+
+      if (request.method === "GET" && url.pathname === "/v1/requests") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const requested = Number(url.searchParams.get("limit") || 50);
+        const limit = Math.max(1, Math.min(100, Number.isFinite(requested) ? requested : 50));
+        return json({ requests: await listRequests(env, limit) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/agents") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        return json({ agents: await listAgents(env) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/agents") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const input = await request.json() as { externalKey?: string; name?: string };
+        if (!input.externalKey?.trim()) return json({ error: "externalKey_required" }, 400);
+        const id = await ensureAgent(env, input.externalKey.trim(), input.name);
+        return json({ id, externalKey: input.externalKey.trim(), name: input.name?.trim() || input.externalKey.trim() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/policies/refund_customer") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const policy = await getRefundPolicy(env);
+        return json({ id: policy.id, action: "refund_customer", rule: policy.rule });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/v1/policies/refund_customer") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        const input = await request.json() as Partial<RefundPolicy>;
+        const automaticBelow = Number(input.automaticBelow);
+        const managerThrough = Number(input.managerThrough);
+
+        if (
+          !Number.isFinite(automaticBelow) ||
+          !Number.isFinite(managerThrough) ||
+          automaticBelow <= 0 ||
+          managerThrough <= automaticBelow
+        ) {
+          return json({ error: "invalid_refund_thresholds" }, 400);
+        }
+
+        return json(await updateRefundPolicy(env, { automaticBelow, managerThrough }));
+      }
 
       if (request.method === "POST" && url.pathname === "/v1/authorize") {
         let input: AuthorizeInput;
@@ -317,11 +481,11 @@ export default {
 
         const result =
           input.action === "refund_customer"
-            ? evaluateRefund(input)
+            ? evaluateRefund(input, await getRefundPolicy(env))
             : {
                 decision: "deny" as const,
                 policyId: "unsupported-action",
-                reason: `Action '${input.action}' is not supported in v0.2.`,
+                reason: `Action '${input.action}' is not supported in v0.3.`,
                 createdAt: new Date().toISOString()
               };
 
@@ -330,12 +494,16 @@ export default {
 
       const requestMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)$/);
       if (request.method === "GET" && requestMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const result = await getRequest(env, requestMatch[1]);
         return result ? json(result) : json({ error: "request_not_found" }, 404);
       }
 
       const decisionMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)\/decision$/);
       if (request.method === "POST" && decisionMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         let input: HumanDecisionInput;
         try {
           input = await request.json();
