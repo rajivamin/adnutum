@@ -49,7 +49,7 @@ const json = (body: unknown, status = 200) =>
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type, authorization",
+      "access-control-allow-headers": "content-type, authorization, x-control-plane-token",
       "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
       "cache-control": "no-store"
     }
