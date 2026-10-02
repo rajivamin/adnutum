@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.5 Authority Primitives
+# AD NŪTUM — v0.6 Authority Receipts + Delegation
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.5 proves that the same authorization engine can govern very different kinds of real-world agent authority, not just refunds.
+v0.6 adds durable authority grants after a decision is made: receipts that can expire, be revoked, and be delegated without widening their original scope.
 
 ## What v0.4 adds
 
@@ -265,3 +265,101 @@ Delete production record         → deny
 The Control Plane's test-request panel is now an Authority Lab. Operators can select an action type and exercise the relevant context without manually crafting JSON.
 
 This is intended to make the generality of the engine visible during demos while preserving the same API contract external agents use.
+
+
+## v0.6 authority receipts
+
+A request is not authority by itself.
+
+AD NŪTUM now distinguishes between:
+
+- an agent asking to do something
+- policy evaluating the request
+- a human approving when required
+- authority actually being granted
+
+When authority is granted, AD NŪTUM issues an **authority receipt**.
+
+Automatic `allow` decisions receive a receipt immediately.
+
+Requests requiring human approval receive a receipt only after the human approves them.
+
+Denied or rejected requests never receive a receipt.
+
+Each receipt records:
+
+- project
+- original authorization request when applicable
+- agent
+- environment
+- action
+- original scope / payload
+- issuer
+- issue time
+- expiration time
+- revocation state
+- parent receipt when delegated
+
+Receipts expire by default after 15 minutes in v0.6.
+
+## Delegation
+
+An active receipt can be delegated to another agent.
+
+Delegation is intentionally narrow:
+
+- the child inherits the parent's action
+- the child inherits the parent's environment
+- the child inherits the parent's scope
+- the child cannot outlive the parent
+- an expired or revoked parent cannot create a child
+
+This makes delegation a transfer of already-granted authority rather than a way to manufacture broader authority.
+
+Conceptually:
+
+```text
+owner approval
+      ↓
+authority receipt
+      ↓
+finance-agent
+      ↓ delegates
+assistant-agent
+      ↓
+same action + same scope + same environment
+      ↓
+expires no later than parent
+```
+
+## Revocation
+
+An operator can revoke an active receipt from the Control Plane.
+
+Revocation records:
+
+- who revoked it
+- when it was revoked
+- why it was revoked
+
+Revoked receipts remain visible for audit history but are no longer active grants.
+
+## Control Plane Receipts view
+
+The v0.6 Control Plane includes a **Receipts** section showing:
+
+- active receipts
+- expired receipts
+- revoked receipts
+- delegated receipts
+- issuing identity
+- environment
+- expiration time
+
+The same screen can create a delegated child receipt or revoke an active receipt.
+
+## v0.6 Supabase migration
+
+v0.6 requires running the updated `supabase/schema.sql`.
+
+The migration adds the `authority_receipts` table and indexes. It is additive and does not remove existing requests, approvals, audit events, agents, environments, or API keys.
