@@ -102,7 +102,7 @@ returning id;
 Keep the returned UUID. The API requires three server-side environment values:
 
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_SECRET_KEY`
 - `DEFAULT_PROJECT_ID`
 
 **Never expose the Supabase service-role key in browser code or commit it to GitHub.**
