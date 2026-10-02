@@ -5,6 +5,8 @@ interface Env {
   SUPABASE_SECRET_KEY: string;
   DEFAULT_PROJECT_ID: string;
   CONTROL_PLANE_TOKEN: string;
+  SIGNING_PRIVATE_JWK?: string;
+  SIGNING_KEY_ID?: string;
 }
 
 type Decision = "allow" | "deny" | "approval_required";
@@ -159,6 +161,72 @@ async function sha256(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + stableJson(obj[key])).join(",") + "}";
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function publicJwkFromPrivate(jwk: JsonWebKey): JsonWebKey {
+  const { d, ...publicJwk } = jwk;
+  return publicJwk;
+}
+
+async function signingMaterial(env: Env) {
+  if (!env.SIGNING_PRIVATE_JWK) return null;
+
+  let privateJwk: JsonWebKey;
+  try {
+    privateJwk = JSON.parse(env.SIGNING_PRIVATE_JWK) as JsonWebKey;
+  } catch {
+    throw new Error("SIGNING_PRIVATE_JWK is not valid JSON.");
+  }
+
+  if (privateJwk.kty !== "EC" || privateJwk.crv !== "P-256" || !privateJwk.d) {
+    throw new Error("SIGNING_PRIVATE_JWK must be a P-256 EC private JWK.");
+  }
+
+  const privateKey = await crypto.subtle.importKey(
+    "jwk",
+    privateJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+
+  return {
+    privateKey,
+    publicJwk: publicJwkFromPrivate(privateJwk),
+    keyId: env.SIGNING_KEY_ID?.trim() || "adnutum-v0.8-demo-key"
+  };
+}
+
+async function signPayload(env: Env, payload: Record<string, unknown>) {
+  const material = await signingMaterial(env);
+  if (!material) return null;
+
+  const bytes = new TextEncoder().encode(stableJson(payload));
+  const signature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    material.privateKey,
+    bytes
+  );
+
+  return {
+    signature: base64Url(new Uint8Array(signature)),
+    signingKeyId: material.keyId,
+    signatureAlgorithm: "ES256",
+    publicJwk: material.publicJwk
+  };
 }
 
 function randomToken(bytes = 24): string {
