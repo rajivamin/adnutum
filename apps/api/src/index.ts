@@ -27,6 +27,7 @@ interface AuthorizationResult {
   requestId?: string;
   requiredApprover?: "manager" | "owner" | "admin" | "editor" | "engineering_lead";
   createdAt: string;
+  receipt?: Record<string, unknown> | null;
 }
 
 interface HumanDecisionInput {
@@ -176,9 +177,18 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function publicJwkFromPrivate(jwk: JsonWebKey): JsonWebKey {
-  const { d, ...publicJwk } = jwk;
-  return publicJwk;
+function publicJwkFromPrivate(jwk: JsonWebKey, keyId?: string): JsonWebKey {
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: jwk.x,
+    y: jwk.y,
+    ext: true,
+    key_ops: ["verify"],
+    use: "sig",
+    alg: "ES256",
+    ...(keyId ? { kid: keyId } : {})
+  };
 }
 
 async function signingMaterial(env: Env) {
@@ -203,10 +213,11 @@ async function signingMaterial(env: Env) {
     ["sign"]
   );
 
+  const keyId = env.SIGNING_KEY_ID?.trim() || "adnutum-v0.8-demo-key";
   return {
     privateKey,
-    publicJwk: publicJwkFromPrivate(privateJwk),
-    keyId: env.SIGNING_KEY_ID?.trim() || "adnutum-v0.8-demo-key"
+    publicJwk: publicJwkFromPrivate(privateJwk, keyId),
+    keyId
   };
 }
 
@@ -601,13 +612,15 @@ async function persistAuthorization(
     authSource: auth.source
   });
 
+  let receipt: Record<string, unknown> | null = null;
+
   if (result.decision === "approval_required") {
     await addAuditEvent(env, auth.projectId, id, "approval_requested", {
       requiredApprover: result.requiredApprover
     });
   } else if (result.decision === "allow") {
     await addAuditEvent(env, auth.projectId, id, "authorization_issued");
-    const receipt = await issueAuthorityReceipt(env, {
+    receipt = await issueAuthorityReceipt(env, {
       projectId: auth.projectId,
       requestId: id,
       agentId,
@@ -616,12 +629,16 @@ async function persistAuthorization(
       scope: normalizeExecutionScope(input as unknown as Record<string, any>),
       issuedBy: "policy_engine"
     });
-    await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
+    await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", {
+      receiptId: receipt.id,
+      signed: Boolean(receipt.signature),
+      signingKeyId: receipt.signing_key_id ?? null
+    });
   } else {
     await addAuditEvent(env, auth.projectId, id, "action_blocked");
   }
 
-  return { ...result, requestId: `req_${id}` };
+  return { ...result, requestId: `req_${id}`, receipt };
 }
 
 async function getRequest(env: Env, projectId: string, rawId: string) {
@@ -1107,9 +1124,18 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.7.0",
+        version: "0.8.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
-        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
+        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
+        receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/.well-known/jwks.json") {
+      const material = await signingMaterial(env);
+      return json({
+        keys: material ? [material.publicJwk] : [],
+        signingConfigured: Boolean(material)
       });
     }
 
