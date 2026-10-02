@@ -1,4 +1,4 @@
--- Authority Layer v0.1 durable schema
+-- AD NŪTUM v0.1 durable schema
 
 create extension if not exists pgcrypto;
 
