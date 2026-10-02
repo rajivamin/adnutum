@@ -1,6 +1,6 @@
 {
   "name": "adnutum",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -9,7 +9,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:control-plane": "node scripts/check-control-plane.mjs",
-    "test:browser": "playwright test tests/control-plane.spec.mjs"
+    "test:browser": "playwright test tests/control-plane.spec.mjs",
+    "generate:signing-key": "node scripts/generate-signing-key.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
