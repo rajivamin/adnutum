@@ -1,7 +1,10 @@
+import { CONTROL_PLANE_HTML } from "./control-plane";
+
 interface Env {
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
   DEFAULT_PROJECT_ID: string;
+  CONTROL_PLANE_TOKEN: string;
 }
 
 type Decision = "allow" | "deny" | "approval_required";
@@ -56,6 +59,17 @@ function assertConfigured(env: Env) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY || !env.DEFAULT_PROJECT_ID) {
     throw new Error("AD NŪTUM persistence is not configured.");
   }
+}
+
+function isControlPlaneAuthorized(request: Request, env: Env): boolean {
+  const supplied = request.headers.get("x-control-plane-token");
+  return Boolean(env.CONTROL_PLANE_TOKEN && supplied && supplied === env.CONTROL_PLANE_TOKEN);
+}
+
+function controlPlaneRequired(request: Request, env: Env): Response | null {
+  return isControlPlaneAuthorized(request, env)
+    ? null
+    : json({ error: "control_plane_unauthorized" }, 401);
 }
 
 async function db<T>(
@@ -380,6 +394,15 @@ export default {
 
     if (request.method === "OPTIONS") return json({ ok: true });
 
+    if (request.method === "GET" && url.pathname === "/") {
+      return new Response(CONTROL_PLANE_HTML, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store"
+        }
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return json({
         ok: true,
@@ -387,7 +410,8 @@ export default {
         version: "0.3.0",
         persistence: Boolean(
           env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID
-        )
+        ),
+        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
       });
     }
 
@@ -395,16 +419,22 @@ export default {
       assertConfigured(env);
 
       if (request.method === "GET" && url.pathname === "/v1/requests") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const requested = Number(url.searchParams.get("limit") || 50);
         const limit = Math.max(1, Math.min(100, Number.isFinite(requested) ? requested : 50));
         return json({ requests: await listRequests(env, limit) });
       }
 
       if (request.method === "GET" && url.pathname === "/v1/agents") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         return json({ agents: await listAgents(env) });
       }
 
       if (request.method === "POST" && url.pathname === "/v1/agents") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const input = await request.json() as { externalKey?: string; name?: string };
         if (!input.externalKey?.trim()) return json({ error: "externalKey_required" }, 400);
         const id = await ensureAgent(env, input.externalKey.trim(), input.name);
@@ -412,11 +442,15 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/v1/policies/refund_customer") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const policy = await getRefundPolicy(env);
         return json({ id: policy.id, action: "refund_customer", rule: policy.rule });
       }
 
       if (request.method === "PUT" && url.pathname === "/v1/policies/refund_customer") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const input = await request.json() as Partial<RefundPolicy>;
         const automaticBelow = Number(input.automaticBelow);
         const managerThrough = Number(input.managerThrough);
@@ -460,12 +494,16 @@ export default {
 
       const requestMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)$/);
       if (request.method === "GET" && requestMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         const result = await getRequest(env, requestMatch[1]);
         return result ? json(result) : json({ error: "request_not_found" }, 404);
       }
 
       const decisionMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)\/decision$/);
       if (request.method === "POST" && decisionMatch) {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
         let input: HumanDecisionInput;
         try {
           input = await request.json();
