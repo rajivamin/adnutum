@@ -31,6 +31,7 @@ export interface AuthorizeResult {
   requestId: string;
   requiredApprover?: RequiredApprover;
   createdAt: string;
+  receipt?: AuthorityReceipt | null;
 }
 
 export interface HumanDecisionInput {
@@ -54,6 +55,10 @@ export interface AuthorityReceipt {
   revoked_at?: string | null;
   revoked_by?: string | null;
   revocation_reason?: string | null;
+  signed_payload?: Record<string, unknown> | null;
+  signature?: string | null;
+  signing_key_id?: string | null;
+  signature_algorithm?: string | null;
   state?: "active" | "expired" | "revoked";
 }
 
@@ -90,6 +95,49 @@ export interface VerifyReceiptResult {
   verifiedAt: string;
 }
 
+export interface VerificationKeySet {
+  keys: JsonWebKey[];
+  signingConfigured: boolean;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + stableJson(obj[key])).join(",") + "}";
+}
+
+function fromBase64Url(value: string): ArrayBuffer {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  return bytes.buffer as ArrayBuffer;
+}
+
+export async function verifySignedReceiptOffline(
+  receipt: AuthorityReceipt,
+  publicJwk: JsonWebKey
+): Promise<boolean> {
+  if (!receipt.signed_payload || !receipt.signature || receipt.signature_algorithm !== "ES256") {
+    return false;
+  }
+
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    publicJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    fromBase64Url(receipt.signature),
+    new TextEncoder().encode(stableJson(receipt.signed_payload))
+  );
+}
+
 export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
@@ -116,6 +164,10 @@ export class AdNutum {
     }
 
     return response.json() as Promise<T>;
+  }
+
+  async getVerificationKeys(): Promise<VerificationKeySet> {
+    return this.request<VerificationKeySet>("/.well-known/jwks.json");
   }
 
   async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {

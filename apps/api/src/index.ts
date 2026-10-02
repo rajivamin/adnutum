@@ -5,6 +5,8 @@ interface Env {
   SUPABASE_SECRET_KEY: string;
   DEFAULT_PROJECT_ID: string;
   CONTROL_PLANE_TOKEN: string;
+  SIGNING_PRIVATE_JWK?: string;
+  SIGNING_KEY_ID?: string;
 }
 
 type Decision = "allow" | "deny" | "approval_required";
@@ -25,6 +27,7 @@ interface AuthorizationResult {
   requestId?: string;
   requiredApprover?: "manager" | "owner" | "admin" | "editor" | "engineering_lead";
   createdAt: string;
+  receipt?: Record<string, unknown> | null;
 }
 
 interface HumanDecisionInput {
@@ -159,6 +162,90 @@ async function sha256(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + stableJson(obj[key])).join(",") + "}";
+}
+
+function fromBase64Url(value: string): ArrayBuffer {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  return bytes.buffer as ArrayBuffer;
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function publicJwkFromPrivate(jwk: JsonWebKey, keyId?: string): JsonWebKey {
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: jwk.x,
+    y: jwk.y,
+    ext: true,
+    key_ops: ["verify"],
+    use: "sig",
+    alg: "ES256",
+    ...(keyId ? { kid: keyId } : {})
+  };
+}
+
+async function signingMaterial(env: Env) {
+  if (!env.SIGNING_PRIVATE_JWK) return null;
+
+  let privateJwk: JsonWebKey;
+  try {
+    privateJwk = JSON.parse(env.SIGNING_PRIVATE_JWK) as JsonWebKey;
+  } catch {
+    throw new Error("SIGNING_PRIVATE_JWK is not valid JSON.");
+  }
+
+  if (privateJwk.kty !== "EC" || privateJwk.crv !== "P-256" || !privateJwk.d) {
+    throw new Error("SIGNING_PRIVATE_JWK must be a P-256 EC private JWK.");
+  }
+
+  const privateKey = await crypto.subtle.importKey(
+    "jwk",
+    privateJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+
+  const keyId = env.SIGNING_KEY_ID?.trim() || "adnutum-v0.8-demo-key";
+  return {
+    privateKey,
+    publicJwk: publicJwkFromPrivate(privateJwk, keyId),
+    keyId
+  };
+}
+
+async function signPayload(env: Env, payload: Record<string, unknown>) {
+  const material = await signingMaterial(env);
+  if (!material) return null;
+
+  const bytes = new TextEncoder().encode(stableJson(payload));
+  const signature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    material.privateKey,
+    bytes
+  );
+
+  return {
+    signature: base64Url(new Uint8Array(signature)),
+    signingKeyId: material.keyId,
+    signatureAlgorithm: "ES256",
+    publicJwk: material.publicJwk
+  };
 }
 
 function randomToken(bytes = 24): string {
@@ -533,13 +620,15 @@ async function persistAuthorization(
     authSource: auth.source
   });
 
+  let receipt: Record<string, unknown> | null = null;
+
   if (result.decision === "approval_required") {
     await addAuditEvent(env, auth.projectId, id, "approval_requested", {
       requiredApprover: result.requiredApprover
     });
   } else if (result.decision === "allow") {
     await addAuditEvent(env, auth.projectId, id, "authorization_issued");
-    const receipt = await issueAuthorityReceipt(env, {
+    receipt = await issueAuthorityReceipt(env, {
       projectId: auth.projectId,
       requestId: id,
       agentId,
@@ -548,12 +637,16 @@ async function persistAuthorization(
       scope: normalizeExecutionScope(input as unknown as Record<string, any>),
       issuedBy: "policy_engine"
     });
-    await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
+    await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", {
+      receiptId: receipt.id,
+      signed: Boolean(receipt.signature),
+      signingKeyId: receipt.signing_key_id ?? null
+    });
   } else {
     await addAuditEvent(env, auth.projectId, id, "action_blocked");
   }
 
-  return { ...result, requestId: `req_${id}` };
+  return { ...result, requestId: `req_${id}`, receipt };
 }
 
 async function getRequest(env: Env, projectId: string, rawId: string) {
@@ -688,10 +781,31 @@ async function issueAuthorityReceipt(
     expiresAt?: string;
   }
 ) {
+  const id = crypto.randomUUID();
+  const issuedAt = new Date().toISOString();
+  const expiresAt = params.expiresAt ?? receiptExpiry(15);
+
+  const signedPayload: Record<string, unknown> = {
+    receiptId: id,
+    projectId: params.projectId,
+    authorizationRequestId: params.requestId ?? null,
+    parentReceiptId: params.parentReceiptId ?? null,
+    agentId: params.agentId,
+    environmentId: params.environmentId ?? null,
+    action: params.action,
+    scope: params.scope,
+    issuedBy: params.issuedBy,
+    issuedAt,
+    expiresAt
+  };
+
+  const signed = await signPayload(env, signedPayload);
+
   const created = await db<Array<Record<string, unknown>>>(env, "authority_receipts?select=*", {
     method: "POST",
     headers: { Prefer: "return=representation" },
     body: JSON.stringify({
+      id,
       project_id: params.projectId,
       authorization_request_id: params.requestId ?? null,
       parent_receipt_id: params.parentReceiptId ?? null,
@@ -700,7 +814,12 @@ async function issueAuthorityReceipt(
       action: params.action,
       scope: params.scope,
       issued_by: params.issuedBy,
-      expires_at: params.expiresAt ?? receiptExpiry(15)
+      issued_at: issuedAt,
+      expires_at: expiresAt,
+      signed_payload: signed ? signedPayload : null,
+      signature: signed?.signature ?? null,
+      signing_key_id: signed?.signingKeyId ?? null,
+      signature_algorithm: signed?.signatureAlgorithm ?? null
     })
   });
 
@@ -727,6 +846,53 @@ async function getReceipt(env: Env, projectId: string, receiptId: string) {
   });
   const rows = await db<Array<Record<string, any>>>(env, `authority_receipts?${query.toString()}`);
   return rows[0] ?? null;
+}
+
+function expectedSignedReceiptPayload(receipt: Record<string, any>): Record<string, unknown> {
+  return {
+    receiptId: String(receipt.id),
+    projectId: String(receipt.project_id),
+    authorizationRequestId: receipt.authorization_request_id ? String(receipt.authorization_request_id) : null,
+    parentReceiptId: receipt.parent_receipt_id ? String(receipt.parent_receipt_id) : null,
+    agentId: String(receipt.agent_id),
+    environmentId: receipt.environment_id ? String(receipt.environment_id) : null,
+    action: String(receipt.action),
+    scope: (receipt.scope ?? {}) as Record<string, unknown>,
+    issuedBy: String(receipt.issued_by),
+    issuedAt: String(receipt.issued_at),
+    expiresAt: String(receipt.expires_at)
+  };
+}
+
+async function verifyStoredReceiptSignature(env: Env, receipt: Record<string, any>): Promise<boolean> {
+  if (!receipt.signature) return true;
+  if (
+    receipt.signature_algorithm !== "ES256" ||
+    !receipt.signed_payload ||
+    !receipt.signing_key_id
+  ) return false;
+
+  const material = await signingMaterial(env);
+  if (!material) return false;
+  if (receipt.signing_key_id !== material.keyId) return false;
+
+  const expected = expectedSignedReceiptPayload(receipt);
+  if (stableJson(expected) !== stableJson(receipt.signed_payload)) return false;
+
+  const publicKey = await crypto.subtle.importKey(
+    "jwk",
+    material.publicJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+
+  return crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    publicKey,
+    fromBase64Url(String(receipt.signature)),
+    new TextEncoder().encode(stableJson(receipt.signed_payload))
+  );
 }
 
 function receiptState(receipt: Record<string, any>) {
@@ -855,6 +1021,10 @@ async function verifyAuthorityReceipt(
 
   const receipt = await getReceipt(env, auth.projectId, input.receiptId.trim());
   if (!receipt) return deny("receipt_not_found");
+
+  if (receipt.signature && !(await verifyStoredReceiptSignature(env, receipt))) {
+    return deny("signature_invalid", receipt);
+  }
 
   const chain = await receiptChainIsActive(env, auth.projectId, receipt);
   if (!chain.active) return deny(chain.reason || "receipt_not_active", receipt);
@@ -1013,9 +1183,18 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.7.0",
+        version: "0.8.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
-        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
+        controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
+        receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/.well-known/jwks.json") {
+      const material = await signingMaterial(env);
+      return json({
+        keys: material ? [material.publicJwk] : [],
+        signingConfigured: Boolean(material)
       });
     }
 

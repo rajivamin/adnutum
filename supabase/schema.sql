@@ -1,4 +1,4 @@
--- AD NŪTUM v0.6 authority receipts and delegation schema
+-- AD NŪTUM v0.8 signed authority receipts schema
 
 create extension if not exists pgcrypto;
 
@@ -137,6 +137,16 @@ alter table authorization_requests enable row level security;
 alter table approval_decisions enable row level security;
 alter table audit_events enable row level security;
 alter table api_keys enable row level security;
+alter table authority_receipts
+  add column if not exists signed_payload jsonb,
+  add column if not exists signature text,
+  add column if not exists signing_key_id text,
+  add column if not exists signature_algorithm text;
+
+create index if not exists authority_receipts_signing_key_idx
+  on authority_receipts(signing_key_id)
+  where signing_key_id is not null;
+
 alter table authority_receipts enable row level security;
 
 -- v0.6 intentionally defines no public RLS policies.
