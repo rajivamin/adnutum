@@ -1,4 +1,4 @@
--- AD NŪTUM v0.2 durable schema
+-- AD NŪTUM v0.3 durable schema
 
 create extension if not exists pgcrypto;
 
@@ -64,6 +64,9 @@ create index if not exists authorization_requests_project_created_idx
 create index if not exists audit_events_project_created_idx
   on audit_events(project_id, created_at desc);
 
+create index if not exists policies_project_action_idx
+  on policies(project_id, action, is_active);
+
 alter table projects enable row level security;
 alter table agents enable row level security;
 alter table policies enable row level security;
@@ -71,5 +74,5 @@ alter table authorization_requests enable row level security;
 alter table approval_decisions enable row level security;
 alter table audit_events enable row level security;
 
--- v0.2 intentionally defines no public RLS policies.
--- The Cloudflare Worker uses the Supabase service-role key server-side.
+-- v0.3 intentionally defines no public RLS policies.
+-- The Cloudflare Worker uses the Supabase secret key server-side.
