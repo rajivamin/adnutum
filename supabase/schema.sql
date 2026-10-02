@@ -1,4 +1,4 @@
--- AD NŪTUM v0.1 durable schema
+-- AD NŪTUM v0.2 durable schema
 
 create extension if not exists pgcrypto;
 
@@ -34,6 +34,7 @@ create table if not exists authorization_requests (
   action text not null,
   payload jsonb not null,
   decision text not null check (decision in ('allow','deny','approval_required')),
+  policy_id text not null,
   reason text not null,
   required_approver text,
   created_at timestamptz not null default now()
@@ -42,7 +43,7 @@ create table if not exists authorization_requests (
 create table if not exists approval_decisions (
   id uuid primary key default gen_random_uuid(),
   authorization_request_id uuid not null references authorization_requests(id) on delete cascade,
-  decided_by uuid,
+  decided_by text not null,
   decision text not null check (decision in ('approved','rejected')),
   note text,
   created_at timestamptz not null default now()
@@ -62,3 +63,13 @@ create index if not exists authorization_requests_project_created_idx
 
 create index if not exists audit_events_project_created_idx
   on audit_events(project_id, created_at desc);
+
+alter table projects enable row level security;
+alter table agents enable row level security;
+alter table policies enable row level security;
+alter table authorization_requests enable row level security;
+alter table approval_decisions enable row level security;
+alter table audit_events enable row level security;
+
+-- v0.2 intentionally defines no public RLS policies.
+-- The Cloudflare Worker uses the Supabase service-role key server-side.
