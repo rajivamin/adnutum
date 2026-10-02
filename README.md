@@ -557,3 +557,31 @@ v0.8 adds signature metadata to `authority_receipts`:
 - `signature_algorithm`
 
 The migration is additive and has already been designed to preserve all existing receipt history.
+
+
+## v0.8.2 offline verification demo
+
+The Control Plane now includes **Copy portable receipt** for signed receipts.
+
+A copied portable receipt can be saved as `receipt.json` and verified locally with:
+
+```bash
+npm run verify:receipt -- receipt.json
+```
+
+The verifier fetches only the public key from:
+
+`/.well-known/jwks.json`
+
+It does **not** call `/v1/verify`.
+
+A valid signed receipt prints:
+
+```text
+SIGNATURE VALID
+Verified locally without calling /v1/verify.
+```
+
+This proves receipt origin and signed-payload integrity independently of the live authority-check endpoint.
+
+Offline verification does not prove that the receipt has not been revoked since issuance. Use `POST /v1/verify` when current revocation / expiration / delegation state matters.
