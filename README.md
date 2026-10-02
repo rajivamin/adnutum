@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.7 Execution-Time Verification
+# AD NŪTUM — v0.8 Signed Authority Receipts
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.7 turns authority receipts into enforceable execution-time credentials: downstream tools can verify that an agent still has authority for the exact action, environment, and scope being attempted.
+v0.8 adds cryptographic provenance to authority receipts. New receipts can be signed by AD NŪTUM with an asymmetric P-256 private key and verified by downstream systems with the public key.
 
 ## What v0.4 adds
 
@@ -209,7 +209,7 @@ No new Cloudflare secret is required for v0.4.
 
 v0.4 is developer-usable infrastructure, but it is not yet enterprise IAM.
 
-Future milestones include organization identity, user accounts, RBAC, API-key rotation workflows, signed authorization receipts, rate limiting, policy versioning, webhooks, and broader action types.
+Future milestones include organization identity, user accounts, RBAC, API-key rotation workflows, rate limiting, policy versioning, webhooks, key rotation/status distribution, and broader action types.
 
 
 ## CI safety net
@@ -444,3 +444,116 @@ This avoids treating narrative explanation as authorization scope while still pr
 The Receipts view now includes a **Verify authority** panel for live demonstrations.
 
 The delegate-agent field also uses a real default value rather than a visual placeholder, removing the ambiguity found during v0.6 validation.
+
+
+## v0.8 signed authority receipts
+
+v0.8 can cryptographically sign every newly issued authority receipt using **ECDSA P-256 with SHA-256 (ES256)**.
+
+The private signing key stays in the Cloudflare Worker as a secret.
+
+The public verification key is exposed at:
+
+`GET /.well-known/jwks.json`
+
+This lets another service verify that:
+
+- the receipt was signed by AD NŪTUM
+- the signed grant payload has not been altered
+- the receipt ID, project, agent, environment, action, scope, issuer, issue time, expiration, and parent receipt are exactly what AD NŪTUM signed
+
+### Portable receipt
+
+For automatic `allow` decisions, the authorization response now includes the newly issued receipt.
+
+That means a caller can receive:
+
+```text
+allow
+  +
+signed authority receipt
+```
+
+and present that receipt to a downstream system.
+
+Human-approved requests also return the receipt when the approval is recorded.
+
+### Offline cryptographic verification
+
+The SDK exports:
+
+`verifySignedReceiptOffline(receipt, publicJwk)`
+
+and can retrieve the public keys with:
+
+`adnutum.getVerificationKeys()`
+
+The offline helper verifies **signature authenticity and payload integrity**.
+
+It does not independently know whether a receipt was revoked after issuance.
+
+For current authority state, use:
+
+`POST /v1/verify`
+
+That endpoint continues to check expiration, revocation, delegation ancestry, agent, action, environment, scope, and now signed-receipt integrity when a signature is present.
+
+### Signed payload
+
+The signature covers a canonical payload containing:
+
+- receipt ID
+- project ID
+- original authorization request ID
+- parent receipt ID
+- agent ID
+- environment ID
+- action
+- execution scope
+- issuer
+- issued-at time
+- expiration time
+
+Mutable operational fields such as revocation timestamps are intentionally not part of the original signature claim.
+
+### Backward compatibility
+
+Existing v0.6/v0.7 receipts remain readable and verifiable through the live authority endpoint.
+
+If no signing key is configured, AD NŪTUM continues issuing ordinary unsigned receipts rather than breaking authorization.
+
+Once signing is configured, newly issued receipts are signed automatically.
+
+### Generate a signing key
+
+From the repository root:
+
+```bash
+npm run generate:signing-key
+```
+
+The command prints:
+
+- `SIGNING_KEY_ID`
+- `SIGNING_PRIVATE_JWK`
+- the corresponding public JWK
+
+Keep the private JWK secret. Never commit it to Git.
+
+Configure these Worker values:
+
+- `SIGNING_PRIVATE_JWK` as a Cloudflare **Secret**
+- `SIGNING_KEY_ID` as a normal variable or secret
+
+The public key does not need to be stored separately because AD NŪTUM derives it from the private JWK.
+
+## v0.8 Supabase migration
+
+v0.8 adds signature metadata to `authority_receipts`:
+
+- `signed_payload`
+- `signature`
+- `signing_key_id`
+- `signature_algorithm`
+
+The migration is additive and has already been designed to preserve all existing receipt history.
