@@ -1,6 +1,6 @@
 interface Env {
   SUPABASE_URL: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
+  SUPABASE_SECRET_KEY: string;
   DEFAULT_PROJECT_ID: string;
 }
 
@@ -84,7 +84,7 @@ function evaluateRefund(input: AuthorizeInput): Omit<AuthorizationResult, "reque
 }
 
 function assertConfigured(env: Env) {
-  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !env.DEFAULT_PROJECT_ID) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY || !env.DEFAULT_PROJECT_ID) {
     throw new Error("AD NŪTUM persistence is not configured.");
   }
 }
@@ -97,8 +97,8 @@ async function db<T>(
   const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${path}`, {
     ...init,
     headers: {
-      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
-      authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: env.SUPABASE_SECRET_KEY,
+      authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
       "content-type": "application/json",
       ...(init.headers ?? {})
     }
@@ -295,7 +295,7 @@ export default {
         service: "adnutum-api",
         version: "0.2.0",
         persistence: Boolean(
-          env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY && env.DEFAULT_PROJECT_ID
+          env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID
         )
       });
     }

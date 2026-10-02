@@ -102,10 +102,10 @@ returning id;
 Keep the returned UUID. The API requires three server-side environment values:
 
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_SECRET_KEY`
 - `DEFAULT_PROJECT_ID`
 
-**Never expose the Supabase service-role key in browser code or commit it to GitHub.**
+**Never expose the Supabase secret key in browser code or commit it to GitHub.**
 
 For local development, copy `apps/api/.dev.vars.example` to `apps/api/.dev.vars` and fill in your own values. `.dev.vars` is ignored by Git.
 
