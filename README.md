@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.4 Developer Onboarding
+# AD NŪTUM — v0.4.3 CI Safety Net
 
 **Programmable authority for AI agents.**
 
@@ -210,3 +210,18 @@ No new Cloudflare secret is required for v0.4.
 v0.4 is developer-usable infrastructure, but it is not yet enterprise IAM.
 
 Future milestones include organization identity, user accounts, RBAC, API-key rotation workflows, signed authorization receipts, rate limiting, policy versioning, webhooks, and broader action types.
+
+
+## CI safety net
+
+Every pull request to `main` now runs:
+
+- TypeScript typechecking
+- Control Plane structural validation
+- Headless Chromium smoke testing
+
+The structural validator fails when browser JavaScript references a missing DOM id or when navigation points to a missing view.
+
+The browser smoke test loads the generated Control Plane, unlocks it using mocked API responses, opens the Developer section, and fails on browser console or page errors.
+
+This directly guards against the class of Control Plane assembly bugs discovered during the v0.4 rollout.
