@@ -756,10 +756,31 @@ async function issueAuthorityReceipt(
     expiresAt?: string;
   }
 ) {
+  const id = crypto.randomUUID();
+  const issuedAt = new Date().toISOString();
+  const expiresAt = params.expiresAt ?? receiptExpiry(15);
+
+  const signedPayload: Record<string, unknown> = {
+    receiptId: id,
+    projectId: params.projectId,
+    authorizationRequestId: params.requestId ?? null,
+    parentReceiptId: params.parentReceiptId ?? null,
+    agentId: params.agentId,
+    environmentId: params.environmentId ?? null,
+    action: params.action,
+    scope: params.scope,
+    issuedBy: params.issuedBy,
+    issuedAt,
+    expiresAt
+  };
+
+  const signed = await signPayload(env, signedPayload);
+
   const created = await db<Array<Record<string, unknown>>>(env, "authority_receipts?select=*", {
     method: "POST",
     headers: { Prefer: "return=representation" },
     body: JSON.stringify({
+      id,
       project_id: params.projectId,
       authorization_request_id: params.requestId ?? null,
       parent_receipt_id: params.parentReceiptId ?? null,
@@ -768,7 +789,12 @@ async function issueAuthorityReceipt(
       action: params.action,
       scope: params.scope,
       issued_by: params.issuedBy,
-      expires_at: params.expiresAt ?? receiptExpiry(15)
+      issued_at: issuedAt,
+      expires_at: expiresAt,
+      signed_payload: signed ? signedPayload : null,
+      signature: signed?.signature ?? null,
+      signing_key_id: signed?.signingKeyId ?? null,
+      signature_algorithm: signed?.signatureAlgorithm ?? null
     })
   });
 
