@@ -7,7 +7,7 @@ function readControlPlaneHtml() {
   return JSON.parse(source.slice(prefix.length, -1));
 }
 
-test("Control Plane unlocks and Developer tab renders without browser errors", async ({ page }) => {
+test("Control Plane unlocks and Receipts + Developer tabs render without browser errors", async ({ page }) => {
   const html = readControlPlaneHtml();
   const browserErrors = [];
 
@@ -72,6 +72,32 @@ test("Control Plane unlocks and Developer tab renders without browser errors", a
       });
     }
 
+    if (url.pathname === "/v1/receipts") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          receipts: [{
+            id: "receipt-ci",
+            project_id: "project-ci",
+            authorization_request_id: "req-ci",
+            parent_receipt_id: null,
+            agent_id: "agent-ci",
+            environment_id: "env-dev",
+            action: "refund_customer",
+            scope: { amount: 7500 },
+            issued_by: "owner",
+            issued_at: "2026-10-01T00:01:00.000Z",
+            expires_at: "2099-10-01T00:16:00.000Z",
+            revoked_at: null,
+            state: "active",
+            agent: { name: "Finance Agent", external_key: "finance-agent" },
+            environment: { name: "Development", slug: "development" }
+          }]
+        })
+      });
+    }
+
     if (url.pathname === "/v1/developer/environments") {
       return route.fulfill({
         status: 200,
@@ -124,6 +150,13 @@ test("Control Plane unlocks and Developer tab renders without browser errors", a
   await expect(page.locator("#tokenModal")).toBeHidden();
   await expect(page.locator("#statRequests")).toHaveText("1");
   await expect(page.locator("#statAgents")).toHaveText("1");
+
+  await page.getByRole("button", { name: "Receipts" }).click();
+
+  await expect(page.locator("#receipts")).toBeVisible();
+  await expect(page.locator("#receiptList")).toContainText("refund_customer");
+  await expect(page.locator("#receiptList")).toContainText("active");
+  await expect(page.locator("#delegateReceiptBtn")).toBeVisible();
 
   await page.getByRole("button", { name: "Developer" }).click();
 
