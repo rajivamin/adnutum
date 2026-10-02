@@ -11,6 +11,13 @@ const html = JSON.parse(source.slice(prefix.length, -1));
 
 const failures = [];
 
+const firstHtmlClose = html.indexOf("</html>");
+if (firstHtmlClose === -1) {
+  failures.push("Generated Control Plane is missing a closing </html> tag.");
+} else if (html.slice(firstHtmlClose + "</html>".length).trim()) {
+  failures.push("Generated Control Plane contains content after the closing </html> tag.");
+}
+
 if (html.includes("\\n")) {
   failures.push("Generated Control Plane contains a literal \\n sequence. Use a real line break instead.");
 }
