@@ -848,6 +848,12 @@ async function getReceipt(env: Env, projectId: string, receiptId: string) {
   return rows[0] ?? null;
 }
 
+function normalizeInstant(value: unknown): string {
+  const date = new Date(String(value));
+  if (!Number.isFinite(date.getTime())) return String(value);
+  return date.toISOString();
+}
+
 function expectedSignedReceiptPayload(receipt: Record<string, any>): Record<string, unknown> {
   return {
     receiptId: String(receipt.id),
@@ -859,8 +865,8 @@ function expectedSignedReceiptPayload(receipt: Record<string, any>): Record<stri
     action: String(receipt.action),
     scope: (receipt.scope ?? {}) as Record<string, unknown>,
     issuedBy: String(receipt.issued_by),
-    issuedAt: String(receipt.issued_at),
-    expiresAt: String(receipt.expires_at)
+    issuedAt: normalizeInstant(receipt.issued_at),
+    expiresAt: normalizeInstant(receipt.expires_at)
   };
 }
 
