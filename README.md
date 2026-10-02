@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.6 Authority Receipts + Delegation
+# AD NŪTUM — v0.7 Execution-Time Verification
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.6 adds durable authority grants after a decision is made: receipts that can expire, be revoked, and be delegated without widening their original scope.
+v0.7 turns authority receipts into enforceable execution-time credentials: downstream tools can verify that an agent still has authority for the exact action, environment, and scope being attempted.
 
 ## What v0.4 adds
 
@@ -363,3 +363,84 @@ The same screen can create a delegated child receipt or revoke an active receipt
 v0.6 requires running the updated `supabase/schema.sql`.
 
 The migration adds the `authority_receipts` table and indexes. It is additive and does not remove existing requests, approvals, audit events, agents, environments, or API keys.
+
+
+## v0.7 execution-time verification
+
+A receipt is useful evidence, but an execution system needs a live answer.
+
+v0.7 adds:
+
+`POST /v1/verify`
+
+A downstream tool can present:
+
+- receipt ID
+- agent ID
+- action
+- amount when relevant
+- currency when relevant
+- execution context
+
+AD NŪTUM verifies that:
+
+- the receipt exists
+- the receipt is active
+- every parent receipt in the delegation chain is active
+- the calling API key belongs to the same environment
+- the agent matches the receipt holder
+- the action matches the granted action
+- the execution scope exactly matches the granted scope
+
+The response is deliberately simple:
+
+```json
+{
+  "valid": true,
+  "reason": "authority_verified"
+}
+```
+
+or:
+
+```json
+{
+  "valid": false,
+  "reason": "scope_mismatch"
+}
+```
+
+Other invalidation reasons include:
+
+- `receipt_not_found`
+- `receipt_expired`
+- `receipt_revoked`
+- `parent_receipt_expired`
+- `parent_receipt_revoked`
+- `agent_mismatch`
+- `action_mismatch`
+- `environment_mismatch`
+
+Verification attempts are written to the audit log.
+
+### Why parent state matters
+
+Delegated authority depends on the authority it came from.
+
+If a parent receipt expires or is revoked, its descendants no longer verify successfully even if a child record itself has not yet been individually revoked.
+
+### Scope matching
+
+v0.7 stores only material execution scope in new receipts:
+
+- amount
+- currency
+- context fields other than descriptive `reason`
+
+This avoids treating narrative explanation as authorization scope while still preventing an agent from changing the actual transaction parameters at execution time.
+
+### Control Plane
+
+The Receipts view now includes a **Verify authority** panel for live demonstrations.
+
+The delegate-agent field also uses a real default value rather than a visual placeholder, removing the ambiguity found during v0.6 validation.
