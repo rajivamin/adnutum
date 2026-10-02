@@ -44,6 +44,15 @@ interface RevokeReceiptInput {
   reason?: string;
 }
 
+interface VerifyReceiptInput {
+  receiptId?: string;
+  agentId?: string;
+  action?: string;
+  amount?: number;
+  currency?: string;
+  context?: Record<string, unknown>;
+}
+
 interface RefundPolicy {
   automaticBelow: number;
   managerThrough: number;
@@ -434,7 +443,7 @@ async function evaluateAction(
     case "delete_record":
       return evaluateDeleteRecord(input);
     default:
-      return policyResult("deny", "unsupported-action", `Action '${input.action}' is not supported in v0.5.`);
+      return policyResult("deny", "unsupported-action", `Action '${input.action}' is not supported in v0.7.`);
   }
 }
 
@@ -471,7 +480,7 @@ async function ensureAgent(
 async function addAuditEvent(
   env: Env,
   projectId: string,
-  requestId: string,
+  requestId: string | null,
   eventType: string,
   data: Record<string, unknown> = {}
 ) {
@@ -536,7 +545,7 @@ async function persistAuthorization(
       agentId,
       environmentId: auth.environmentId,
       action: input.action!,
-      scope: input as unknown as Record<string, unknown>,
+      scope: normalizeExecutionScope(input as unknown as Record<string, any>),
       issuedBy: "policy_engine"
     });
     await addAuditEvent(env, auth.projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
@@ -651,7 +660,7 @@ async function recordHumanDecision(
       agentId: String(requestRow.agent_id),
       environmentId: requestRow.environment_id ? String(requestRow.environment_id) : null,
       action: String(requestRow.action),
-      scope: payload,
+      scope: normalizeExecutionScope(payload as Record<string, any>),
       issuedBy: input.decidedBy?.trim() || "human"
     });
     await addAuditEvent(env, projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
@@ -724,6 +733,162 @@ function receiptState(receipt: Record<string, any>) {
   if (receipt.revoked_at) return "revoked";
   if (new Date(String(receipt.expires_at)).getTime() <= Date.now()) return "expired";
   return "active";
+}
+
+
+function normalizeExecutionScope(input: Record<string, any>): Record<string, unknown> {
+  const scope: Record<string, unknown> = {};
+
+  if (typeof input.amount === "number" && Number.isFinite(input.amount)) {
+    scope.amount = input.amount;
+  }
+
+  if (typeof input.currency === "string" && input.currency.trim()) {
+    scope.currency = input.currency.trim().toUpperCase();
+  }
+
+  if (input.context && typeof input.context === "object" && !Array.isArray(input.context)) {
+    const context: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input.context)) {
+      if (key === "reason") continue;
+      context[key] = value;
+    }
+    if (Object.keys(context).length) scope.context = context;
+  }
+
+  return scope;
+}
+
+function receiptExecutionScope(receipt: Record<string, any>): Record<string, unknown> {
+  const stored = (receipt.scope ?? {}) as Record<string, any>;
+
+  // v0.6 stored the full authorize payload. v0.7 stores only material execution scope.
+  if ("agentId" in stored || "action" in stored || "amount" in stored || "currency" in stored || "context" in stored) {
+    return normalizeExecutionScope(stored);
+  }
+
+  return stored;
+}
+
+function deepEqualValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((value, index) => deepEqualValue(value, b[index]));
+  }
+  if (
+    a && b &&
+    typeof a === "object" &&
+    typeof b === "object" &&
+    !Array.isArray(a) &&
+    !Array.isArray(b)
+  ) {
+    const aKeys = Object.keys(a as Record<string, unknown>).sort();
+    const bKeys = Object.keys(b as Record<string, unknown>).sort();
+    return aKeys.length === bKeys.length &&
+      aKeys.every((key, index) =>
+        key === bKeys[index] &&
+        deepEqualValue(
+          (a as Record<string, unknown>)[key],
+          (b as Record<string, unknown>)[key]
+        )
+      );
+  }
+  return false;
+}
+
+async function receiptChainIsActive(
+  env: Env,
+  projectId: string,
+  receipt: Record<string, any>
+): Promise<{ active: boolean; reason?: string }> {
+  const visited = new Set<string>();
+  let current: Record<string, any> | null = receipt;
+
+  while (current) {
+    const id = String(current.id);
+    if (visited.has(id)) return { active: false, reason: "delegation_cycle_detected" };
+    visited.add(id);
+
+    const state = receiptState(current);
+    if (state !== "active") {
+      return {
+        active: false,
+        reason: current.id === receipt.id
+          ? `receipt_${state}`
+          : `parent_receipt_${state}`
+      };
+    }
+
+    if (!current.parent_receipt_id) break;
+    current = await getReceipt(env, projectId, String(current.parent_receipt_id));
+    if (!current) return { active: false, reason: "parent_receipt_missing" };
+  }
+
+  return { active: true };
+}
+
+async function verifyAuthorityReceipt(
+  env: Env,
+  auth: AuthContext,
+  input: VerifyReceiptInput
+) {
+  const deny = async (reason: string, receipt?: Record<string, any> | null) => {
+    await addAuditEvent(env, auth.projectId, null, "authority_receipt_verification_failed", {
+      receiptId: input.receiptId ?? null,
+      agentId: input.agentId ?? null,
+      action: input.action ?? null,
+      environment: auth.environmentSlug,
+      reason
+    });
+    return {
+      valid: false,
+      reason,
+      receiptId: input.receiptId ?? null,
+      state: receipt ? receiptState(receipt) : "unknown",
+      verifiedAt: new Date().toISOString()
+    };
+  };
+
+  if (!input.receiptId?.trim()) return deny("receiptId_required");
+  if (!input.agentId?.trim()) return deny("agentId_required");
+  if (!input.action?.trim()) return deny("action_required");
+
+  const receipt = await getReceipt(env, auth.projectId, input.receiptId.trim());
+  if (!receipt) return deny("receipt_not_found");
+
+  const chain = await receiptChainIsActive(env, auth.projectId, receipt);
+  if (!chain.active) return deny(chain.reason || "receipt_not_active", receipt);
+
+  const holder = String(receipt.agent?.external_key || "");
+  if (holder !== input.agentId.trim()) return deny("agent_mismatch", receipt);
+  if (String(receipt.action) !== input.action.trim()) return deny("action_mismatch", receipt);
+
+  const receiptEnvironmentId = receipt.environment_id ? String(receipt.environment_id) : null;
+  if (receiptEnvironmentId !== auth.environmentId) return deny("environment_mismatch", receipt);
+
+  const grantedScope = receiptExecutionScope(receipt);
+  const requestedScope = normalizeExecutionScope(input as Record<string, any>);
+  if (!deepEqualValue(grantedScope, requestedScope)) return deny("scope_mismatch", receipt);
+
+  await addAuditEvent(env, auth.projectId, null, "authority_receipt_verified", {
+    receiptId: receipt.id,
+    agentId: input.agentId,
+    action: input.action,
+    environment: auth.environmentSlug
+  });
+
+  return {
+    valid: true,
+    reason: "authority_verified",
+    receiptId: String(receipt.id),
+    agentId: input.agentId.trim(),
+    action: input.action.trim(),
+    environment: auth.environmentSlug,
+    scope: grantedScope,
+    expiresAt: receipt.expires_at,
+    delegated: Boolean(receipt.parent_receipt_id),
+    verifiedAt: new Date().toISOString()
+  };
 }
 
 async function delegateReceipt(
@@ -848,7 +1013,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.6.0",
+        version: "0.7.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
       });
@@ -953,6 +1118,16 @@ export default {
 
         const result = await evaluateAction(env, auth.projectId, input);
         return json(await persistAuthorization(env, auth, input, result));
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/verify") {
+        let input: VerifyReceiptInput;
+        try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+
+        const auth = await authorizeContext(request, env);
+        if (!auth) return json({ error: "api_key_required" }, 401);
+
+        return json(await verifyAuthorityReceipt(env, auth, input));
       }
 
       if (request.method === "GET" && url.pathname === "/v1/receipts") {
