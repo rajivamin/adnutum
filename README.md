@@ -1,8 +1,8 @@
-# Authority Layer — v0.1 Foundation
+# AD NŪTUM — v0.1 Foundation
 
-**Working codename. Not a final brand.**
+**Authorization infrastructure for AI agents.**
 
-Authority Layer is a small authorization service for AI agents. An agent asks whether it may take a consequential action. The service evaluates a policy and returns one of three outcomes:
+AD NŪTUM is an authorization service for AI agents. An agent asks whether it may take a consequential action. The service evaluates policy and returns one of three outcomes:
 
 - `allow`
 - `deny`
@@ -17,8 +17,9 @@ Prove one complete loop:
 1. Agent proposes an action.
 2. Policy engine evaluates it.
 3. Low-risk actions are allowed.
-4. High-risk actions require human approval.
-5. Every decision receives an audit event.
+4. Prohibited actions are denied.
+5. Higher-risk actions require human approval.
+6. The decision is recorded in an audit trail.
 
 ## Repository layout
 
