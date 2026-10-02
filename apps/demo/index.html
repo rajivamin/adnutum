@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Authority Layer — Agent Approval Demo</title>
+  <style>
+    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color-scheme: light; }
+    body { margin: 0; background: #f6f7f9; color: #111827; }
+    main { max-width: 980px; margin: 0 auto; padding: 56px 24px 80px; }
+    .eyebrow { font-weight: 800; letter-spacing: .08em; text-transform: uppercase; font-size: 12px; }
+    h1 { font-size: clamp(42px, 7vw, 78px); line-height: .98; margin: 14px 0 20px; max-width: 850px; }
+    .sub { font-size: 21px; line-height: 1.5; max-width: 760px; color: #4b5563; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 42px; }
+    .card { background: white; border: 1px solid #e5e7eb; border-radius: 20px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.04); }
+    label { display: block; margin: 14px 0 7px; font-weight: 700; }
+    input, textarea { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 1px solid #d1d5db; border-radius: 11px; font: inherit; }
+    button { margin-top: 18px; border: 0; border-radius: 12px; padding: 13px 16px; font-weight: 800; cursor: pointer; background: #111827; color: white; }
+    button.secondary { background: #eef2ff; color: #1f2937; margin-right: 8px; }
+    .decision { font-size: 32px; font-weight: 900; margin-bottom: 10px; }
+    .pill { display: inline-block; padding: 7px 10px; border-radius: 999px; background: #f3f4f6; font-weight: 800; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .timeline { margin-top: 20px; padding: 0; list-style: none; }
+    .timeline li { padding: 11px 0; border-bottom: 1px solid #eee; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .empty { color: #6b7280; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Authority Layer · v0.1</div>
+  <h1>Reasoning is not authority.</h1>
+  <p class="sub">An AI agent can know what action to take without having permission to take it. This demo places a policy gate between the agent and a consequential action.</p>
+
+  <div class="grid">
+    <section class="card">
+      <div class="pill">Agent proposal</div>
+      <label>Customer</label>
+      <input id="customer" value="ABC Manufacturing" />
+      <label>Refund amount</label>
+      <input id="amount" type="number" value="4800" />
+      <label>Reason</label>
+      <textarea id="reason" rows="3">Duplicate payment detected</textarea>
+      <button id="evaluate">Ask for authorization</button>
+    </section>
+
+    <section class="card">
+      <div class="pill">Policy decision</div>
+      <div id="decision" class="decision" style="margin-top:18px">Waiting</div>
+      <div id="detail" class="empty">Submit the agent's proposed action.</div>
+      <div id="approval" style="display:none">
+        <button class="secondary" id="reject">Reject</button>
+        <button id="approve">Approve</button>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:20px">
+    <div class="pill">Audit ledger</div>
+    <ul id="timeline" class="timeline"><li class="empty">No events yet.</li></ul>
+  </section>
+</main>
+<script>
+  const timeline = document.querySelector('#timeline');
+  const decision = document.querySelector('#decision');
+  const detail = document.querySelector('#detail');
+  const approval = document.querySelector('#approval');
+  let request = null;
+
+  function addEvent(text) {
+    if (timeline.querySelector('.empty')) timeline.innerHTML = '';
+    const li = document.createElement('li');
+    li.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+    timeline.prepend(li);
+  }
+
+  function evaluateLocally(amount) {
+    if (!Number.isFinite(amount) || amount <= 0) return {decision:'deny', reason:'Refund amount must be a positive number.'};
+    if (amount < 100) return {decision:'allow', reason:'Below $100 automatic authorization threshold.'};
+    if (amount <= 1000) return {decision:'approval_required', approver:'manager', reason:'$100–$1,000 requires manager approval.'};
+    return {decision:'approval_required', approver:'owner', reason:'Above $1,000 requires owner approval.'};
+  }
+
+  document.querySelector('#evaluate').addEventListener('click', () => {
+    const amount = Number(document.querySelector('#amount').value);
+    request = {
+      customer: document.querySelector('#customer').value,
+      amount,
+      reason: document.querySelector('#reason').value
+    };
+    addEvent(`Agent proposed $${amount.toLocaleString()} refund for ${request.customer}`);
+    const result = evaluateLocally(amount);
+    addEvent(`Policy refund-threshold-default evaluated → ${result.decision}`);
+    decision.textContent = result.decision.replace('_', ' ').toUpperCase();
+    detail.textContent = result.reason;
+    approval.style.display = result.decision === 'approval_required' ? 'block' : 'none';
+    if (result.decision === 'allow') addEvent('Authorization issued automatically');
+    if (result.decision === 'deny') addEvent('Action blocked');
+    if (result.decision === 'approval_required') addEvent(`${result.approver} approval requested`);
+  });
+
+  document.querySelector('#approve').addEventListener('click', () => {
+    approval.style.display = 'none';
+    decision.textContent = 'APPROVED';
+    detail.textContent = 'Human approval recorded. Authorization may now be issued.';
+    addEvent('Human approved request');
+    addEvent('Authorization issued');
+    addEvent('Execution may proceed');
+  });
+
+  document.querySelector('#reject').addEventListener('click', () => {
+    approval.style.display = 'none';
+    decision.textContent = 'REJECTED';
+    detail.textContent = 'Human rejected the proposed action.';
+    addEvent('Human rejected request');
+    addEvent('Action blocked');
+  });
+</script>
+</body>
+</html>
