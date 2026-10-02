@@ -4,7 +4,7 @@
 
 AI reasoning and organizational authority are different things.
 
-A model may correctly determine what action would achieve a goal while still lacking authority to perform that action. Authority Layer creates a programmable boundary between an agent's proposed action and its execution.
+A model may correctly determine what action would achieve a goal while still lacking authority to perform that action. AD NŪTUM creates a programmable boundary between an agent's proposed action and its execution.
 
 ## v0.1 flow
 
