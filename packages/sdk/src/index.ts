@@ -1,9 +1,24 @@
 export type AuthorizationDecision = "allow" | "deny" | "approval_required";
 export type HumanDecision = "approved" | "rejected";
 
+export type AdNutumAction =
+  | "refund_customer"
+  | "increase_ad_budget"
+  | "pay_invoice"
+  | "publish_content"
+  | "deploy_production"
+  | "delete_record";
+
+export type RequiredApprover =
+  | "manager"
+  | "owner"
+  | "admin"
+  | "editor"
+  | "engineering_lead";
+
 export interface AuthorizeInput {
   agentId: string;
-  action: string;
+  action: AdNutumAction | (string & {});
   amount?: number;
   currency?: string;
   context?: Record<string, unknown>;
@@ -14,7 +29,7 @@ export interface AuthorizeResult {
   policyId: string;
   reason: string;
   requestId: string;
-  requiredApprover?: "manager" | "owner";
+  requiredApprover?: RequiredApprover;
   createdAt: string;
 }
 
