@@ -107,10 +107,11 @@ function stableJson(value: unknown): string {
   return "{" + Object.keys(obj).sort().map(key => JSON.stringify(key) + ":" + stableJson(obj[key])).join(",") + "}";
 }
 
-function fromBase64Url(value: string): Uint8Array {
+function fromBase64Url(value: string): ArrayBuffer {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
   const binary = atob(padded);
-  return Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  return bytes.buffer as ArrayBuffer;
 }
 
 export async function verifySignedReceiptOffline(
