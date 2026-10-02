@@ -23,7 +23,7 @@ interface AuthorizationResult {
   policyId: string;
   reason: string;
   requestId?: string;
-  requiredApprover?: "manager" | "owner";
+  requiredApprover?: "manager" | "owner" | "admin" | "editor" | "engineering_lead";
   createdAt: string;
 }
 
@@ -50,6 +50,45 @@ const DEFAULT_REFUND_POLICY: RefundPolicy = {
   automaticBelow: 100,
   managerThrough: 1000
 };
+
+const ACTION_CATALOG = [
+  {
+    action: "refund_customer",
+    category: "finance",
+    summary: "Refund a customer payment",
+    examples: ["$68 duplicate charge", "$2,400 lost shipment"]
+  },
+  {
+    action: "increase_ad_budget",
+    category: "marketing",
+    summary: "Increase a campaign's daily ad budget",
+    examples: ["+$75/day", "+$1,500/day"]
+  },
+  {
+    action: "pay_invoice",
+    category: "finance",
+    summary: "Pay a vendor invoice",
+    examples: ["$240 approved vendor", "$8,000 new vendor"]
+  },
+  {
+    action: "publish_content",
+    category: "publishing",
+    summary: "Publish content to a public channel",
+    examples: ["Routine social post", "Sensitive public statement"]
+  },
+  {
+    action: "deploy_production",
+    category: "engineering",
+    summary: "Deploy software to production",
+    examples: ["Release application build"]
+  },
+  {
+    action: "delete_record",
+    category: "data",
+    summary: "Delete a data record",
+    examples: ["Delete test record", "Delete production record"]
+  }
+] as const;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -285,6 +324,107 @@ function evaluateRefund(
     requiredApprover: "owner",
     createdAt
   };
+}
+
+
+function contextBoolean(input: AuthorizeInput, key: string): boolean {
+  return input.context?.[key] === true;
+}
+
+function contextString(input: AuthorizeInput, key: string): string {
+  const value = input.context?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function policyResult(
+  decision: Decision,
+  policyId: string,
+  reason: string,
+  requiredApprover?: AuthorizationResult["requiredApprover"]
+): Omit<AuthorizationResult, "requestId"> {
+  return {
+    decision,
+    policyId,
+    reason,
+    ...(requiredApprover ? { requiredApprover } : {}),
+    createdAt: new Date().toISOString()
+  };
+}
+
+function evaluateAdBudget(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
+  const increase = input.amount;
+  if (typeof increase !== "number" || !Number.isFinite(increase) || increase <= 0) {
+    return policyResult("deny", "ad-budget-v1", "Ad budget increase must be a positive number.");
+  }
+  if (increase <= 100) {
+    return policyResult("allow", "ad-budget-v1", "Ad budget increases of $100/day or less are automatically authorized.");
+  }
+  if (increase <= 1000) {
+    return policyResult("approval_required", "ad-budget-v1", "Ad budget increases above $100/day through $1,000/day require manager approval.", "manager");
+  }
+  return policyResult("approval_required", "ad-budget-v1", "Ad budget increases above $1,000/day require owner approval.", "owner");
+}
+
+function evaluateInvoice(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
+  const amount = input.amount;
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    return policyResult("deny", "invoice-payment-v1", "Invoice amount must be a positive number.");
+  }
+  const vendorApproved = contextBoolean(input, "vendorApproved");
+  if (!vendorApproved) {
+    return policyResult("approval_required", "invoice-payment-v1", "Payments to vendors not on the approved vendor list require owner approval.", "owner");
+  }
+  if (amount < 500) {
+    return policyResult("allow", "invoice-payment-v1", "Approved-vendor invoices below $500 are automatically authorized.");
+  }
+  if (amount <= 5000) {
+    return policyResult("approval_required", "invoice-payment-v1", "Approved-vendor invoices from $500 through $5,000 require manager approval.", "manager");
+  }
+  return policyResult("approval_required", "invoice-payment-v1", "Approved-vendor invoices above $5,000 require owner approval.", "owner");
+}
+
+function evaluatePublishContent(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
+  const sensitive = contextBoolean(input, "sensitive");
+  const channel = contextString(input, "channel") || "public channel";
+  if (sensitive) {
+    return policyResult("approval_required", "publish-content-v1", `Sensitive content for ${channel} requires owner approval.`, "owner");
+  }
+  return policyResult("approval_required", "publish-content-v1", `Publishing to ${channel} requires editorial approval.`, "editor");
+}
+
+function evaluateProductionDeploy(): Omit<AuthorizationResult, "requestId"> {
+  return policyResult("approval_required", "production-deploy-v1", "Production deployments require engineering lead approval.", "engineering_lead");
+}
+
+function evaluateDeleteRecord(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
+  const scope = contextString(input, "scope").toLowerCase();
+  if (scope === "production") {
+    return policyResult("deny", "delete-record-v1", "Direct deletion of production records is prohibited by policy.");
+  }
+  return policyResult("approval_required", "delete-record-v1", "Deleting a non-production record requires admin approval.", "admin");
+}
+
+async function evaluateAction(
+  env: Env,
+  projectId: string,
+  input: AuthorizeInput
+): Promise<Omit<AuthorizationResult, "requestId">> {
+  switch (input.action) {
+    case "refund_customer":
+      return evaluateRefund(input, await getRefundPolicy(env, projectId));
+    case "increase_ad_budget":
+      return evaluateAdBudget(input);
+    case "pay_invoice":
+      return evaluateInvoice(input);
+    case "publish_content":
+      return evaluatePublishContent(input);
+    case "deploy_production":
+      return evaluateProductionDeploy();
+    case "delete_record":
+      return evaluateDeleteRecord(input);
+    default:
+      return policyResult("deny", "unsupported-action", `Action '${input.action}' is not supported in v0.5.`);
+  }
 }
 
 async function ensureAgent(
@@ -548,7 +688,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.4.0",
+        version: "0.5.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN)
       });
@@ -637,6 +777,12 @@ export default {
         return json(await updateRefundPolicy(env, env.DEFAULT_PROJECT_ID, { automaticBelow, managerThrough }));
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/actions") {
+        const denied = controlPlaneRequired(request, env);
+        if (denied) return denied;
+        return json({ actions: ACTION_CATALOG });
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/authorize") {
         let input: AuthorizeInput;
         try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
@@ -645,16 +791,7 @@ export default {
         const auth = await authorizeContext(request, env);
         if (!auth) return json({ error: "api_key_required" }, 401);
 
-        const result =
-          input.action === "refund_customer"
-            ? evaluateRefund(input, await getRefundPolicy(env, auth.projectId))
-            : {
-                decision: "deny" as const,
-                policyId: "unsupported-action",
-                reason: `Action '${input.action}' is not supported in v0.4.`,
-                createdAt: new Date().toISOString()
-              };
-
+        const result = await evaluateAction(env, auth.projectId, input);
         return json(await persistAuthorization(env, auth, input, result));
       }
 
