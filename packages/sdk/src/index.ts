@@ -1,4 +1,5 @@
 export type AuthorizationDecision = "allow" | "deny" | "approval_required";
+export type HumanDecision = "approved" | "rejected";
 
 export interface AuthorizeInput {
   agentId: string;
@@ -14,6 +15,13 @@ export interface AuthorizeResult {
   reason: string;
   requestId: string;
   requiredApprover?: "manager" | "owner";
+  createdAt: string;
+}
+
+export interface HumanDecisionInput {
+  decision: HumanDecision;
+  decidedBy?: string;
+  note?: string;
 }
 
 export interface AdNutumOptions {
@@ -24,20 +32,46 @@ export interface AdNutumOptions {
 export class AdNutum {
   constructor(private readonly options: AdNutumOptions) {}
 
-  async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
-    const response = await fetch(`${this.options.baseUrl.replace(/\/$/, "")}/v1/authorize`, {
-      method: "POST",
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await fetch(`${this.options.baseUrl.replace(/\/$/, "")}${path}`, {
+      ...init,
       headers: {
         "content-type": "application/json",
-        ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {})
-      },
-      body: JSON.stringify(input)
+        ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
+        ...(init.headers ?? {})
+      }
     });
 
     if (!response.ok) {
-      throw new Error(`AD NŪTUM request failed: ${response.status}`);
+      const detail = await response.text();
+      throw new Error(`AD NŪTUM request failed: ${response.status} ${detail}`);
     }
 
-    return response.json() as Promise<AuthorizeResult>;
+    return response.json() as Promise<T>;
+  }
+
+  async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
+    return this.request<AuthorizeResult>("/v1/authorize", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async decide(requestId: string, input: HumanDecisionInput) {
+    return this.request<{ requestId: string; decision: HumanDecision }>(
+      `/v1/requests/${encodeURIComponent(requestId)}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify(input)
+      }
+    );
+  }
+
+  async getRequest(requestId: string) {
+    return this.request<{
+      request: Record<string, unknown>;
+      approvals: Array<Record<string, unknown>>;
+      events: Array<Record<string, unknown>>;
+    }>(`/v1/requests/${encodeURIComponent(requestId)}`);
   }
 }
