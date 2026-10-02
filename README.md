@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.4.3 CI Safety Net
+# AD NŪTUM — v0.5 Authority Primitives
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.4 turns the working Control Plane into infrastructure another developer can actually integrate.
+v0.5 proves that the same authorization engine can govern very different kinds of real-world agent authority, not just refunds.
 
 ## What v0.4 adds
 
@@ -225,3 +225,43 @@ The structural validator fails when browser JavaScript references a missing DOM 
 The browser smoke test loads the generated Control Plane, unlocks it using mocked API responses, opens the Developer section, and fails on browser console or page errors.
 
 This directly guards against the class of Control Plane assembly bugs discovered during the v0.4 rollout.
+
+
+## v0.5 authority primitives
+
+The live engine now recognizes six distinct action families:
+
+- `refund_customer` — amount thresholds
+- `increase_ad_budget` — daily spend increase thresholds
+- `pay_invoice` — amount plus approved-vendor context
+- `publish_content` — editorial approval with sensitive-content escalation
+- `deploy_production` — engineering-lead approval
+- `delete_record` — admin approval outside production, hard deny in production
+
+These are intentionally different policy shapes. Together they demonstrate that AD NŪTUM can evaluate monetary thresholds, contextual facts, approval roles, environment sensitivity, and irreversible risk through one common authorization contract.
+
+### Example outcomes
+
+```text
+$75/day ad increase              → allow
+$500/day ad increase             → manager approval
+$2,000/day ad increase           → owner approval
+
+$240 approved-vendor invoice     → allow
+$1,200 approved-vendor invoice   → manager approval
+Any unapproved vendor            → owner approval
+
+Routine public content           → editor approval
+Sensitive public content         → owner approval
+
+Production deployment            → engineering lead approval
+
+Delete development record        → admin approval
+Delete production record         → deny
+```
+
+## Authority Lab
+
+The Control Plane's test-request panel is now an Authority Lab. Operators can select an action type and exercise the relevant context without manually crafting JSON.
+
+This is intended to make the generality of the engine visible during demos while preserving the same API contract external agents use.
