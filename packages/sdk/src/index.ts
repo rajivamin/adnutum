@@ -68,6 +68,28 @@ export interface RevokeReceiptInput {
   reason?: string;
 }
 
+export interface VerifyReceiptInput {
+  receiptId: string;
+  agentId: string;
+  action: string;
+  amount?: number;
+  currency?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface VerifyReceiptResult {
+  valid: boolean;
+  reason: string;
+  receiptId?: string | null;
+  agentId?: string;
+  action?: string;
+  environment?: string;
+  scope?: Record<string, unknown>;
+  expiresAt?: string;
+  delegated?: boolean;
+  verifiedAt: string;
+}
+
 export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
@@ -111,6 +133,13 @@ export class AdNutum {
         body: JSON.stringify(input)
       }
     );
+  }
+
+  async verifyReceipt(input: VerifyReceiptInput) {
+    return this.request<VerifyReceiptResult>("/v1/verify", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
   }
 
   async listReceipts() {
