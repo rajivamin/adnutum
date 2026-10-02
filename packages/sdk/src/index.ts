@@ -16,13 +16,13 @@ export interface AuthorizeResult {
   requiredApprover?: "manager" | "owner";
 }
 
-export interface AuthorityLayerOptions {
+export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
 }
 
-export class AuthorityLayer {
-  constructor(private readonly options: AuthorityLayerOptions) {}
+export class AdNutum {
+  constructor(private readonly options: AdNutumOptions) {}
 
   async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
     const response = await fetch(`${this.options.baseUrl.replace(/\/$/, "")}/v1/authorize`, {
@@ -35,7 +35,7 @@ export class AuthorityLayer {
     });
 
     if (!response.ok) {
-      throw new Error(`Authority Layer request failed: ${response.status}`);
+      throw new Error(`AD NŪTUM request failed: ${response.status}`);
     }
 
     return response.json() as Promise<AuthorizeResult>;
