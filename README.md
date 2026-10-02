@@ -1,133 +1,212 @@
-# AD NŪTUM — v0.3 Control Plane
+# AD NŪTUM — v0.4 Developer Onboarding
 
-**Authorization infrastructure for AI agents.**
+**Programmable authority for AI agents.**
 
-AD NŪTUM places a programmable authority boundary between an AI agent's reasoning and consequential actions.
+AD NŪTUM sits between an agent's reasoning and a consequential action. It answers a simple question:
 
-An agent asks whether it may act. AD NŪTUM evaluates policy and returns one of three outcomes:
+> Is this agent allowed to do this, in this environment, under this project's policy?
+
+The response is one of:
 
 - `allow`
 - `deny`
 - `approval_required`
 
-v0.3 adds the first human-usable Control Plane on top of the durable v0.2 backend.
+v0.4 turns the working Control Plane into infrastructure another developer can actually integrate.
 
-## v0.3 goal
+## What v0.4 adds
 
-Replace PowerShell and raw database inspection with an operator cockpit that can:
+- Development, Staging, and Production environments
+- Project-scoped API keys
+- Environment-scoped API keys
+- Bearer authentication for agent requests
+- SHA-256-only API-key storage
+- Key revocation
+- Last-used timestamps
+- One-time raw-key reveal
+- Developer quickstart inside the Control Plane
+- Existing human approval and audit flows preserved
 
-1. See authorization requests and their current state.
-2. Open a request and inspect its evidence.
-3. Approve or reject requests that require human judgment.
-4. Read the audit trail.
-5. Register agent identities.
-6. Edit the live refund authority thresholds.
-7. Create test authorization requests from the browser.
+## The separation of authority
 
-## Control Plane
+AD NŪTUM now has two distinct access paths.
 
-The Worker root path serves the Control Plane:
+### Human operator
 
-`GET /`
-
-The browser asks for a Control Plane token and sends it in:
+The Control Plane uses:
 
 `x-control-plane-token`
 
-The token is stored only in browser session storage.
+It can inspect requests, approve or reject actions, manage policies, register agents, and create or revoke developer credentials.
 
-Control Plane routes such as request listings, decisions, agents, and policy editing require that token. The agent-facing authorization route remains separate:
+### External software or agent
+
+An agent uses:
+
+`Authorization: Bearer adn_...`
+
+It can request authorization through:
 
 `POST /v1/authorize`
 
-## Core API
+The API key determines the project and environment automatically.
 
-### Authorize an action
+This means an external integration never needs the Supabase secret, Cloudflare access, or the Control Plane token.
 
-`POST /v1/authorize`
+## Environments
+
+A project receives three default environments:
+
+- Development
+- Staging
+- Production
+
+Keys are tied to one environment.
+
+Example prefixes:
+
+- `adn_dev_`
+- `adn_stage_`
+- `adn_live_`
+
+An authorization request records the environment that produced it.
+
+## API-key security
+
+Raw API keys are shown once when created.
+
+AD NŪTUM stores only a SHA-256 hash plus non-sensitive display metadata such as the prefix and last four characters.
+
+Revoked keys cannot authorize new actions.
+
+## 5-minute integration
+
+Install the SDK:
+
+```bash
+npm install @adnutum/sdk
+```
+
+Create a client:
+
+```ts
+import { AdNutum } from "@adnutum/sdk";
+
+const adnutum = new AdNutum({
+  baseUrl: "https://adnutum-api.example.workers.dev",
+  apiKey: process.env.ADNUTUM_API_KEY
+});
+```
+
+Ask for authority:
+
+```ts
+const result = await adnutum.authorize({
+  agentId: "finance-agent",
+  action: "refund_customer",
+  amount: 4800,
+  currency: "USD",
+  context: {
+    customer: "ABC Manufacturing",
+    reason: "Duplicate payment"
+  }
+});
+```
+
+Possible result:
 
 ```json
 {
-  "agentId": "finance-agent",
-  "action": "refund_customer",
-  "amount": 4800,
-  "currency": "USD",
-  "context": {
-    "customer": "ABC Manufacturing",
-    "reason": "Duplicate payment"
-  }
+  "decision": "approval_required",
+  "requiredApprover": "owner",
+  "requestId": "req_..."
 }
 ```
 
-### List requests
+## Control Plane
 
-`GET /v1/requests`
+The Worker root serves the browser Control Plane:
 
-Requires the Control Plane token.
+`GET /`
 
-### Inspect a request
+The Developer section lets an operator:
 
-`GET /v1/requests/:requestId`
+- inspect Development / Staging / Production
+- create API keys
+- copy a newly generated key once
+- see key prefixes and last four characters
+- see when a key was last used
+- revoke keys
+- view copy-paste integration examples
 
-Requires the Control Plane token.
+## Current policy proof
 
-### Record a human decision
+The first live policy remains intentionally narrow:
 
-`POST /v1/requests/:requestId/decision`
+- under $100 → automatic authorization
+- $100–$1,000 → manager approval
+- above $1,000 → owner approval
+- invalid amount → deny
 
-Requires the Control Plane token.
+The thresholds are stored in Supabase and editable through the Control Plane.
 
-### Manage agents
+## Why this architecture matters for Muse and MCP
 
-`GET /v1/agents`
+A future Muse connector, MCP server, or other agent integration should not need privileged access to AD NŪTUM's infrastructure.
 
-`POST /v1/agents`
+It can hold an environment-specific API key and call the authorization endpoint before a consequential tool action.
 
-Require the Control Plane token.
+Conceptually:
 
-### Read or update the refund policy
+```text
+Muse / MCP agent
+      ↓
+proposes action
+      ↓
+AD NŪTUM API key
+      ↓
+project + environment + policy
+      ↓
+allow | deny | approval_required
+      ↓
+tool executes only when authorized
+```
 
-`GET /v1/policies/refund_customer`
+This keeps the intelligence layer, capability layer, and authority layer separate.
 
-`PUT /v1/policies/refund_customer`
+## Supabase migration
 
-Require the Control Plane token.
+Run the current `supabase/schema.sql` in the Supabase SQL Editor when upgrading from v0.3.
+
+The migration is additive. It creates:
+
+- `environments`
+- `api_keys`
+- `authorization_requests.environment_id`
+
+Existing authorization history remains intact.
 
 ## Runtime variables
 
-The Cloudflare Worker requires:
+The Cloudflare Worker still requires:
 
 - `SUPABASE_URL`
 - `SUPABASE_SECRET_KEY`
 - `DEFAULT_PROJECT_ID`
 - `CONTROL_PLANE_TOKEN`
 
-**Never expose the Supabase secret key in browser code or commit it to GitHub.**
-
-For local development, copy `apps/api/.dev.vars.example` to `apps/api/.dev.vars` and fill in your own values. `.dev.vars` is ignored by Git.
+No new Cloudflare secret is required for v0.4.
 
 ## Repository layout
 
 - `apps/api` — Cloudflare Worker API + Control Plane
 - `apps/api/src/control-plane.ts` — browser Control Plane
-- `apps/demo` — original zero-build v0.1 playground
 - `packages/sdk` — TypeScript SDK
-- `supabase/schema.sql` — durable hosted-control-plane data model
-- `docs/architecture.md` — product and architecture notes
-
-## Default demo policy
-
-The first live policy remains intentionally narrow:
-
-- Under $100 → allow
-- $100–$1,000 → manager approval
-- Above $1,000 → owner approval
-- Missing or non-positive amount → deny
-
-In v0.3 those thresholds are now stored in Supabase and editable from the Control Plane.
+- `supabase/schema.sql` — durable schema
+- `docs/architecture.md` — architecture notes
 
 ## Security boundary
 
-v0.3 is a protected demo environment, not production IAM.
+v0.4 is developer-usable infrastructure, but it is not yet enterprise IAM.
 
-The Control Plane token protects operator routes, while the Supabase secret remains server-side inside Cloudflare. Production API keys, OAuth, RBAC, signed authorization tokens, rate limiting, and organization-level identity remain future milestones.
+Future milestones include organization identity, user accounts, RBAC, API-key rotation workflows, signed authorization receipts, rate limiting, policy versioning, webhooks, and broader action types.

@@ -1,4 +1,4 @@
--- AD NŪTUM v0.3 durable schema
+-- AD NŪTUM v0.4 developer onboarding schema
 
 create extension if not exists pgcrypto;
 
@@ -6,6 +6,16 @@ create table if not exists projects (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   created_at timestamptz not null default now()
+);
+
+create table if not exists environments (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  name text not null,
+  slug text not null,
+  is_default boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique(project_id, slug)
 );
 
 create table if not exists agents (
@@ -30,6 +40,7 @@ create table if not exists policies (
 create table if not exists authorization_requests (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references projects(id) on delete cascade,
+  environment_id uuid references environments(id) on delete set null,
   agent_id uuid references agents(id) on delete set null,
   action text not null,
   payload jsonb not null,
@@ -39,6 +50,9 @@ create table if not exists authorization_requests (
   required_approver text,
   created_at timestamptz not null default now()
 );
+
+alter table authorization_requests
+  add column if not exists environment_id uuid references environments(id) on delete set null;
 
 create table if not exists approval_decisions (
   id uuid primary key default gen_random_uuid(),
@@ -58,8 +72,24 @@ create table if not exists audit_events (
   created_at timestamptz not null default now()
 );
 
+create table if not exists api_keys (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  environment_id uuid not null references environments(id) on delete cascade,
+  name text not null,
+  key_prefix text not null,
+  key_hash text not null unique,
+  last4 text not null,
+  last_used_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists authorization_requests_project_created_idx
   on authorization_requests(project_id, created_at desc);
+
+create index if not exists authorization_requests_environment_created_idx
+  on authorization_requests(environment_id, created_at desc);
 
 create index if not exists audit_events_project_created_idx
   on audit_events(project_id, created_at desc);
@@ -67,12 +97,18 @@ create index if not exists audit_events_project_created_idx
 create index if not exists policies_project_action_idx
   on policies(project_id, action, is_active);
 
+create index if not exists api_keys_project_created_idx
+  on api_keys(project_id, created_at desc);
+
 alter table projects enable row level security;
+alter table environments enable row level security;
 alter table agents enable row level security;
 alter table policies enable row level security;
 alter table authorization_requests enable row level security;
 alter table approval_decisions enable row level security;
 alter table audit_events enable row level security;
+alter table api_keys enable row level security;
 
--- v0.3 intentionally defines no public RLS policies.
+-- v0.4 intentionally defines no public RLS policies.
 -- The Cloudflare Worker uses the Supabase secret key server-side.
+-- Raw developer API keys are never stored. Only SHA-256 hashes are persisted.
