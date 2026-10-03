@@ -248,6 +248,9 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#signingKeyList")).toContainText("active");
   await expect(page.locator("#humanIdentityList")).toContainText("CI Operator");
   await expect(page.locator("#humanIdentityList")).toContainText("CI Owner");
+  await expect(page.locator("#createHumanIdentityBtn")).toBeVisible();
+  await expect(page.locator("#copyHumanIdentityTokenBtn")).toBeHidden();
+  await expect(page.locator("#dismissHumanIdentityTokenBtn")).toBeHidden();
   await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toBeVisible();
   await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toHaveText("Request revocation");
 
