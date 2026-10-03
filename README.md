@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.9 Signing Key Lifecycle
+# AD NŪTUM — v1.0 Emergency Trust Controls
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.9 adds signing-key lifecycle and public trust distribution so AD NŪTUM can rotate signing keys without invalidating historical receipts.
+v1.0 adds emergency signing-key trust revocation so AD NŪTUM can explicitly withdraw trust from a compromised key while preserving ordinary retired-key history.
 
 ## What v0.4 adds
 
@@ -669,3 +669,47 @@ To rotate later:
 AD NŪTUM will register the new public key as active and retire the previous active key automatically.
 
 A future emergency-revocation control can build on the reserved `revoked` lifecycle state.
+
+
+## v1.0 emergency trust controls
+
+Normal key rotation and emergency key revocation are intentionally different.
+
+### Retired
+
+A retired key:
+
+- no longer signs new receipts
+- remains published in the trusted JWKS key set
+- continues to verify historical receipts
+
+### Revoked
+
+A revoked key:
+
+- is removed from the trusted JWKS `keys` array
+- appears in `revokedKeyIds`
+- causes live receipt verification to return `signing_key_revoked`
+- causes the local verification demo to return `TRUST REVOKED`
+- records who revoked it, when, and why
+
+### Control Plane
+
+The Developer → Signing trust panel now lists active, retired, and revoked signing keys.
+
+Non-revoked keys expose **Revoke trust**.
+
+The operator must provide an emergency revocation reason and confirm the action.
+
+Revoking the currently active signing key is allowed because a genuine compromise may require immediate trust withdrawal. The UI warns that new signed receipts will stop until a replacement key is configured.
+
+### Safety behavior
+
+If the configured Cloudflare signing key itself has been revoked:
+
+- new signing fails closed
+- the JWKS endpoint remains readable
+- existing non-revoked keys remain distributable
+- operators can still inspect trust state and install a replacement key
+
+This keeps emergency trust distribution available during a signing incident instead of making the trust endpoint depend on the compromised key remaining usable.
