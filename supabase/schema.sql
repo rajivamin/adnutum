@@ -1,4 +1,4 @@
--- AD NŪTUM v0.9 signing key lifecycle schema
+-- AD NŪTUM v1.0 emergency trust controls schema
 
 create extension if not exists pgcrypto;
 
@@ -160,6 +160,10 @@ create table if not exists signing_keys (
 
 create index if not exists signing_keys_status_activated_idx
   on signing_keys(status, activated_at desc);
+
+alter table signing_keys
+  add column if not exists revoked_by text,
+  add column if not exists revocation_reason text;
 
 alter table signing_keys enable row level security;
 
