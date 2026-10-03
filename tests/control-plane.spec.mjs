@@ -10,10 +10,18 @@ function readControlPlaneHtml() {
 test("Control Plane unlocks and Receipts + Developer tabs render without browser errors", async ({ page }) => {
   const html = readControlPlaneHtml();
   const browserErrors = [];
+  let expectGovernedDecision403 = false;
 
   page.on("pageerror", error => browserErrors.push(error.message));
   page.on("console", message => {
-    if (message.type() === "error") browserErrors.push(message.text());
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (
+      expectGovernedDecision403 &&
+      text.includes("Failed to load resource") &&
+      text.includes("403")
+    ) return;
+    browserErrors.push(text);
   });
 
   await page.route("http://adnutum.test/**", async route => {
@@ -54,6 +62,50 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
             approval_decisions: []
           }]
         })
+      });
+    }
+
+    if (url.pathname === "/v1/requests/req-ci") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          request: {
+            id: "req-ci",
+            action: "refund_customer",
+            decision: "approval_required",
+            required_approver: "owner",
+            reason: "CI request requires owner approval.",
+            created_at: "2026-10-01T00:00:00.000Z",
+            payload: { amount: 7500 },
+            agent: { name: "finance-agent", external_key: "finance-agent" },
+            requester: { id: "human-operator-ci", name: "CI Operator", role: "operator" }
+          },
+          approvals: [],
+          events: [
+            {
+              id: "event-ci-1",
+              event_type: "authorization_evaluated",
+              created_at: "2026-10-01T00:00:00.000Z"
+            },
+            {
+              id: "event-ci-2",
+              event_type: "approval_requested",
+              created_at: "2026-10-01T00:00:01.000Z"
+            }
+          ]
+        })
+      });
+    }
+
+    if (
+      url.pathname === "/v1/requests/req-ci/decision" &&
+      request.method() === "POST"
+    ) {
+      return route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "owner_identity_required" })
       });
     }
 
@@ -229,6 +281,14 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
 
   await expect(page.locator("#tokenModal")).toBeHidden();
   await expect(page.locator("#statRequests")).toHaveText("1");
+  await page.locator("#recentRequests [data-open-request='req-ci']").click();
+  expectGovernedDecision403 = true;
+  await page.locator("#approveDetail").click();
+  await expect(page.locator("#decisionError")).toHaveText(
+    "Blocked: an Owner identity is required for this decision."
+  );
+  expectGovernedDecision403 = false;
+  await page.locator("#closeDetail").click();
   await expect(page.locator("#statAgents")).toHaveText("1");
 
   await page.getByRole("button", { name: "Receipts" }).click();
