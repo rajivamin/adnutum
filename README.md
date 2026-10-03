@@ -1,4 +1,4 @@
-# AD NŪTUM — v0.8 Signed Authority Receipts
+# AD NŪTUM — v0.9 Signing Key Lifecycle
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v0.8 adds cryptographic provenance to authority receipts. New receipts can be signed by AD NŪTUM with an asymmetric P-256 private key and verified by downstream systems with the public key.
+v0.9 adds signing-key lifecycle and public trust distribution so AD NŪTUM can rotate signing keys without invalidating historical receipts.
 
 ## What v0.4 adds
 
@@ -585,3 +585,87 @@ Verified locally without calling /v1/verify.
 This proves receipt origin and signed-payload integrity independently of the live authority-check endpoint.
 
 Offline verification does not prove that the receipt has not been revoked since issuance. Use `POST /v1/verify` when current revocation / expiration / delegation state matters.
+
+
+## v0.9 signing key lifecycle
+
+v0.9 introduces a public signing-key registry.
+
+The current private signing key remains only in the Cloudflare Worker secret:
+
+`SIGNING_PRIVATE_JWK`
+
+Supabase stores only:
+
+- public JWK
+- key ID (`kid`)
+- algorithm
+- lifecycle status
+- activation time
+- retirement time
+- revocation time
+
+No private signing key material is written to Supabase.
+
+### Key states
+
+- `active` — signs new receipts and is trusted for verification
+- `retired` — no longer signs new receipts but remains trusted for historical receipts
+- `revoked` — no longer trusted; omitted from the trusted JWKS key list
+
+When the Worker sees a new configured signing key, it registers that public key as active and retires any previously active key.
+
+### JWKS trust distribution
+
+`GET /.well-known/jwks.json`
+
+now returns:
+
+- all active and retired public verification keys
+- lifecycle metadata for each trusted key
+- the active key ID
+- revoked key IDs
+- signing configuration status
+
+This lets downstream systems resolve a receipt's `signing_key_id` against the correct historical public key.
+
+### Historical receipt verification
+
+Live receipt verification no longer assumes that every receipt was signed by the Worker’s current private key.
+
+Instead, AD NŪTUM:
+
+1. reads the receipt's `kid`
+2. resolves that key from the public registry
+3. rejects revoked or unknown keys
+4. verifies the signature using the corresponding public JWK
+5. continues with the normal authority checks
+
+That means rotating from key A to key B does not invalidate valid historical receipts signed by key A.
+
+### Control Plane
+
+The Developer view includes **Signing trust**, showing:
+
+- key ID
+- algorithm
+- active / retired state
+- activation time
+- retirement time
+
+This makes trust history visible without exposing private key material.
+
+### Rotation model
+
+v0.9 is deliberately compatible with the existing v0.8 Cloudflare variables.
+
+To rotate later:
+
+1. generate a new keypair
+2. update `SIGNING_KEY_ID`
+3. update `SIGNING_PRIVATE_JWK`
+4. deploy the Worker
+
+AD NŪTUM will register the new public key as active and retire the previous active key automatically.
+
+A future emergency-revocation control can build on the reserved `revoked` lifecycle state.
