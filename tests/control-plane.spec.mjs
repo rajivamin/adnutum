@@ -90,6 +90,17 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
       });
     }
 
+    if (
+      url.pathname === "/v1/requests/req-ci/decision" &&
+      request.method() === "POST"
+    ) {
+      return route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "owner_identity_required" })
+      });
+    }
+
     if (url.pathname === "/v1/agents") {
       return route.fulfill({
         status: 200,
@@ -263,7 +274,10 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#tokenModal")).toBeHidden();
   await expect(page.locator("#statRequests")).toHaveText("1");
   await page.locator("#recentRequests [data-open-request='req-ci']").click();
-  await expect(page.locator("#decisionError")).toBeVisible();
+  await page.locator("#approveDetail").click();
+  await expect(page.locator("#decisionError")).toHaveText(
+    "Blocked: an Owner identity is required for this decision."
+  );
   await page.locator("#closeDetail").click();
   await expect(page.locator("#statAgents")).toHaveText("1");
 
