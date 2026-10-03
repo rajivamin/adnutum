@@ -120,6 +120,35 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
       });
     }
 
+
+    if (url.pathname === "/.well-known/jwks.json") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          keys: [{
+            kty: "EC",
+            crv: "P-256",
+            x: "ci-x",
+            y: "ci-y",
+            use: "sig",
+            alg: "ES256",
+            kid: "adnutum-ci-key"
+          }],
+          keyLifecycle: [{
+            kid: "adnutum-ci-key",
+            status: "active",
+            algorithm: "ES256",
+            activatedAt: "2026-10-02T00:00:00.000Z",
+            retiredAt: null
+          }],
+          revokedKeyIds: [],
+          signingConfigured: true,
+          activeKeyId: "adnutum-ci-key"
+        })
+      });
+    }
+
     if (url.pathname === "/v1/developer/quickstart") {
       return route.fulfill({
         status: 200,
@@ -164,6 +193,8 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#environmentList")).toContainText("Development");
   await expect(page.locator("#installCode")).toHaveText("npm install @adnutum/sdk");
   await expect(page.locator("#createKeyBtn")).toBeVisible();
+  await expect(page.locator("#signingKeyList")).toContainText("adnutum-ci-key");
+  await expect(page.locator("#signingKeyList")).toContainText("active");
 
   expect(browserErrors, browserErrors.join("\n")).toEqual([]);
 });
