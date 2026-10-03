@@ -162,10 +162,29 @@ export async function verifySignedReceiptOffline(
   );
 }
 
+export interface HumanIdentity {
+  id: string;
+  projectId: string;
+  name: string;
+  role: "operator" | "owner";
+}
+
+export interface HumanIdentityRecord {
+  id: string;
+  name: string;
+  role: "operator" | "owner";
+  token_prefix: string;
+  last4: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  created_at: string;
+}
+
 export interface AdNutumOptions {
   baseUrl: string;
   apiKey?: string;
   controlPlaneToken?: string;
+  controlPlaneIdentityToken?: string;
 }
 
 export class AdNutum {
@@ -178,6 +197,9 @@ export class AdNutum {
         "content-type": "application/json",
         ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
         ...(this.options.controlPlaneToken ? { "x-control-plane-token": this.options.controlPlaneToken } : {}),
+        ...(this.options.controlPlaneIdentityToken
+          ? { "x-control-plane-identity-token": this.options.controlPlaneIdentityToken }
+          : {}),
         ...(init.headers ?? {})
       }
     });
@@ -196,6 +218,21 @@ export class AdNutum {
 
   async listSigningKeys() {
     return this.request<{ signingKeys: SigningKeyRecord[] }>("/v1/developer/signing-keys");
+  }
+
+  async listHumanIdentities() {
+    return this.request<{ identities: HumanIdentityRecord[] }>("/v1/developer/human-identities");
+  }
+
+  async getActingHumanIdentity() {
+    return this.request<{ identity: HumanIdentity }>("/v1/developer/human-identities/me");
+  }
+
+  async createHumanIdentity(name: string, role: "operator" | "owner") {
+    return this.request<{ identity: HumanIdentityRecord; token: string }>("/v1/developer/human-identities", {
+      method: "POST",
+      body: JSON.stringify({ name, role })
+    });
   }
 
   async requestSigningKeyRevocation(

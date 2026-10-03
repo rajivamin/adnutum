@@ -61,12 +61,22 @@ interface RefundPolicy {
   managerThrough: number;
 }
 
+interface HumanIdentity {
+  id: string;
+  projectId: string;
+  name: string;
+  role: "operator" | "owner";
+}
+
 interface AuthContext {
   projectId: string;
   environmentId: string | null;
   environmentSlug: string;
   source: "control_plane" | "api_key";
   apiKeyId?: string;
+  humanIdentityId?: string;
+  humanIdentityName?: string;
+  humanIdentityRole?: "operator" | "owner";
 }
 
 const DEFAULT_REFUND_POLICY: RefundPolicy = {
@@ -119,7 +129,7 @@ const json = (body: unknown, status = 200) =>
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type, authorization, x-control-plane-token",
+      "access-control-allow-headers": "content-type, authorization, x-control-plane-token, x-control-plane-identity-token",
       "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
       "cache-control": "no-store"
     }
@@ -140,6 +150,74 @@ function controlPlaneRequired(request: Request, env: Env): Response | null {
   return isControlPlaneAuthorized(request, env)
     ? null
     : json({ error: "control_plane_unauthorized" }, 401);
+}
+
+async function authenticateHumanIdentity(request: Request, env: Env): Promise<HumanIdentity | null> {
+  const raw = request.headers.get("x-control-plane-identity-token")?.trim() || "";
+  if (!raw.startsWith("adn_human_")) return null;
+
+  const tokenHash = await sha256(raw);
+  const query = new URLSearchParams({
+    token_hash: `eq.${tokenHash}`,
+    revoked_at: "is.null",
+    select: "id,project_id,name,role",
+    limit: "1"
+  });
+  const rows = await db<Array<Record<string, any>>>(env, `control_plane_identities?${query.toString()}`);
+  const row = rows[0];
+  if (!row) return null;
+
+  const used = new URLSearchParams({ id: `eq.${row.id}` });
+  await db(env, `control_plane_identities?${used.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ last_used_at: new Date().toISOString() })
+  });
+
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    name: String(row.name),
+    role: row.role === "owner" ? "owner" : "operator"
+  };
+}
+
+async function listHumanIdentities(env: Env, projectId: string) {
+  const query = new URLSearchParams({
+    project_id: `eq.${projectId}`,
+    select: "id,name,role,token_prefix,last4,last_used_at,revoked_at,created_at",
+    order: "created_at.asc"
+  });
+  return db<Array<Record<string, unknown>>>(env, `control_plane_identities?${query.toString()}`);
+}
+
+async function createHumanIdentity(
+  env: Env,
+  projectId: string,
+  name: string,
+  role: "operator" | "owner"
+) {
+  const rawToken = "adn_human_" + randomToken(28);
+  const tokenHash = await sha256(rawToken);
+  const tokenPrefix = "adn_human_";
+
+  const created = await db<Array<Record<string, any>>>(env, "control_plane_identities?select=id,name,role,created_at", {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      project_id: projectId,
+      name,
+      role,
+      token_prefix: tokenPrefix,
+      token_hash: tokenHash,
+      last4: rawToken.slice(-4)
+    })
+  });
+
+  return {
+    identity: created[0] ?? null,
+    token: rawToken
+  };
 }
 
 async function db<T>(env: Env, path: string, init: RequestInit = {}): Promise<T> {
@@ -752,7 +830,8 @@ async function persistAuthorization(
       decision: result.decision,
       policy_id: result.policyId,
       reason: result.reason,
-      required_approver: result.requiredApprover ?? null
+      required_approver: result.requiredApprover ?? null,
+      requested_by_identity_id: auth.humanIdentityId ?? null
     })
   });
 
@@ -760,7 +839,10 @@ async function persistAuthorization(
     decision: result.decision,
     policyId: result.policyId,
     environment: auth.environmentSlug,
-    authSource: auth.source
+    authSource: auth.source,
+    humanIdentityId: auth.humanIdentityId ?? null,
+    humanIdentityName: auth.humanIdentityName ?? null,
+    humanIdentityRole: auth.humanIdentityRole ?? null
   });
 
   let receipt: Record<string, unknown> | null = null;
@@ -797,7 +879,7 @@ async function getRequest(env: Env, projectId: string, rawId: string) {
   const requestQuery = new URLSearchParams({
     id: `eq.${id}`,
     project_id: `eq.${projectId}`,
-    select: "*,agent:agents(external_key,name),environment:environments(name,slug)",
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),requester:control_plane_identities!requested_by_identity_id(id,name,role)",
     limit: "1"
   });
   const approvalQuery = new URLSearchParams({
@@ -824,7 +906,7 @@ async function getRequest(env: Env, projectId: string, rawId: string) {
 async function listRequests(env: Env, projectId: string, limit: number) {
   const query = new URLSearchParams({
     project_id: `eq.${projectId}`,
-    select: "*,agent:agents(external_key,name),environment:environments(name,slug),approval_decisions(decision,decided_by,created_at)",
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),requester:control_plane_identities!requested_by_identity_id(id,name,role),approval_decisions(decision,decided_by,decided_by_identity_id,created_at)",
     order: "created_at.desc",
     limit: String(limit)
   });
@@ -844,7 +926,8 @@ async function recordHumanDecision(
   env: Env,
   projectId: string,
   rawId: string,
-  input: HumanDecisionInput
+  input: HumanDecisionInput,
+  identity: HumanIdentity | null = null
 ) {
   const id = cleanRequestId(rawId);
   if (input.decision !== "approved" && input.decision !== "rejected") {
@@ -860,12 +943,25 @@ async function recordHumanDecision(
     return { error: "request_already_decided", status: 409 };
   }
 
+  const requestRowForIdentity = existing.request as Record<string, any>;
+  if (String(requestRowForIdentity.action) === "revoke_signing_key") {
+    if (!identity) return { error: "human_identity_required", status: 401 };
+    if (identity.role !== "owner") return { error: "owner_identity_required", status: 403 };
+    if (
+      requestRowForIdentity.requested_by_identity_id &&
+      String(requestRowForIdentity.requested_by_identity_id) === identity.id
+    ) {
+      return { error: "separation_of_duties_violation", status: 409 };
+    }
+  }
+
   await db(env, "approval_decisions", {
     method: "POST",
     headers: { Prefer: "return=minimal" },
     body: JSON.stringify({
       authorization_request_id: id,
-      decided_by: input.decidedBy?.trim() || "human",
+      decided_by: identity?.name || input.decidedBy?.trim() || "human",
+      decided_by_identity_id: identity?.id ?? null,
       decision: input.decision,
       note: input.note?.trim() || null
     })
@@ -876,7 +972,11 @@ async function recordHumanDecision(
     projectId,
     id,
     input.decision === "approved" ? "human_approved" : "human_rejected",
-    { decidedBy: input.decidedBy?.trim() || "human" }
+    {
+      decidedBy: identity?.name || input.decidedBy?.trim() || "human",
+      decidedByIdentityId: identity?.id ?? null,
+      decidedByRole: identity?.role ?? null
+    }
   );
 
   await addAuditEvent(
@@ -896,7 +996,7 @@ async function recordHumanDecision(
     if (String(requestRow.action) === "revoke_signing_key") {
       const keyId = String(payload.context?.signingKeyId || "");
       const reason = String(payload.context?.reason || "");
-      const revokedBy = input.decidedBy?.trim() || "human";
+      const revokedBy = identity?.name || input.decidedBy?.trim() || "human";
 
       const result = await revokeSigningKey(env, keyId, revokedBy, reason, id);
       if ("error" in result) {
@@ -923,7 +1023,7 @@ async function recordHumanDecision(
         environmentId: requestRow.environment_id ? String(requestRow.environment_id) : null,
         action: String(requestRow.action),
         scope: normalizeExecutionScope(payload as Record<string, any>),
-        issuedBy: input.decidedBy?.trim() || "human"
+        issuedBy: identity?.name || input.decidedBy?.trim() || "human"
       });
       await addAuditEvent(env, projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
     }
@@ -1364,7 +1464,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "1.0.0",
+        version: "1.2.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
         receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
@@ -1417,6 +1517,29 @@ export default {
         if (denied) return denied;
         const projectId = env.DEFAULT_PROJECT_ID;
 
+        if (request.method === "GET" && url.pathname === "/v1/developer/human-identities") {
+          return json({ identities: await listHumanIdentities(env, projectId) });
+        }
+
+        if (request.method === "GET" && url.pathname === "/v1/developer/human-identities/me") {
+          const identity = await authenticateHumanIdentity(request, env);
+          if (!identity || identity.projectId !== projectId) {
+            return json({ error: "human_identity_required" }, 401);
+          }
+          return json({ identity });
+        }
+
+
+        if (request.method === "POST" && url.pathname === "/v1/developer/human-identities") {
+          let input: { name?: string; role?: string };
+          try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+          const name = input.name?.trim();
+          const role = input.role === "owner" ? "owner" : input.role === "operator" ? "operator" : null;
+          if (!name) return json({ error: "identity_name_required" }, 400);
+          if (!role) return json({ error: "identity_role_must_be_operator_or_owner" }, 400);
+          return json(await createHumanIdentity(env, projectId, name, role), 201);
+        }
+
         if (request.method === "GET" && url.pathname === "/v1/developer/environments") {
           return json({ environments: await ensureDefaultEnvironments(env, projectId) });
         }
@@ -1458,16 +1581,24 @@ export default {
           if (!signingKey) return json({ error: "signing_key_not_found" }, 404);
           if (signingKey.status === "revoked") return json({ error: "signing_key_already_revoked" }, 409);
 
+          const identity = await authenticateHumanIdentity(request, env);
+          if (!identity || identity.projectId !== projectId) {
+            return json({ error: "human_identity_required" }, 401);
+          }
+
           const environment = await defaultEnvironment(env, projectId);
           const auth: AuthContext = {
             projectId,
             environmentId: environment ? String(environment.id) : null,
             environmentSlug: environment ? String(environment.slug) : "development",
-            source: "control_plane"
+            source: "control_plane",
+            humanIdentityId: identity.id,
+            humanIdentityName: identity.name,
+            humanIdentityRole: identity.role
           };
 
           const authorizeInput: AuthorizeInput = {
-            agentId: input.requestedBy?.trim() || "control-plane-operator",
+            agentId: identity.name,
             action: "revoke_signing_key",
             context: {
               signingKeyId: keyId,
@@ -1617,7 +1748,14 @@ export default {
         if (denied) return denied;
         let input: HumanDecisionInput;
         try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
-        const result = await recordHumanDecision(env, env.DEFAULT_PROJECT_ID, decisionMatch[1], input);
+        const identity = await authenticateHumanIdentity(request, env);
+        const result = await recordHumanDecision(
+          env,
+          env.DEFAULT_PROJECT_ID,
+          decisionMatch[1],
+          input,
+          identity && identity.projectId === env.DEFAULT_PROJECT_ID ? identity : null
+        );
         return json(result, "status" in result ? result.status : 200);
       }
 

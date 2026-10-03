@@ -1,4 +1,4 @@
-# AD NŪTUM — v1.1 Govern the Governor
+# AD NŪTUM — v1.2 Human Identity + Separation of Duties
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v1.1 governs emergency signing-key revocation through AD NŪTUM's own authorization and human-approval machinery.
+v1.2 adds individual Control Plane identities and enforces separation of duties for governed trust revocation.
 
 ## What v0.4 adds
 
@@ -772,3 +772,96 @@ The SDK method is now:
 `requestSigningKeyRevocation(keyId, reason, requestedBy?)`
 
 The method returns the normal authorization result rather than pretending the key was revoked immediately.
+
+
+## v1.2 human identity + separation of duties
+
+v1.2 turns human approval from a role label into an authenticated identity check.
+
+### Human identities
+
+The Control Plane can provision project-scoped human identities with one of two roles:
+
+- `operator`
+- `owner`
+
+Each human identity receives a one-time raw credential beginning with:
+
+`adn_human_`
+
+AD NŪTUM stores only the SHA-256 hash plus display metadata such as the prefix and last four characters.
+
+The shared `CONTROL_PLANE_TOKEN` remains a bootstrap/admin credential for opening and administering the Control Plane. It is not enough by itself to request or approve governed signing-key revocation.
+
+### Acting identity
+
+The browser Control Plane can hold a separate individual human token for the current session.
+
+The Developer view shows:
+
+- known human identities
+- name
+- role
+- masked credential
+- last-used time
+- current acting identity
+
+This allows an operator token and an owner token to be switched explicitly during testing.
+
+### Request identity
+
+A governed `revoke_signing_key` request now requires an authenticated human identity.
+
+The authorization request stores:
+
+`requested_by_identity_id`
+
+The request detail can therefore show which human identity initiated the action.
+
+### Approval identity
+
+A governed signing-key revocation decision requires:
+
+- an authenticated human identity
+- role `owner`
+- a different identity from the requester
+
+The approval decision stores:
+
+`decided_by_identity_id`
+
+If the same identity that requested the action attempts to approve it, AD NŪTUM returns:
+
+`separation_of_duties_violation`
+
+If a non-owner identity attempts to approve it, AD NŪTUM returns:
+
+`owner_identity_required`
+
+If no human identity credential is present, AD NŪTUM returns:
+
+`human_identity_required`
+
+### Structural governance
+
+The governed path is now:
+
+```text
+bootstrap/admin opens Control Plane
+          ↓
+Operator identity requests revocation
+          ↓
+authorization request records Operator identity
+          ↓
+owner approval required
+          ↓
+same Operator tries to approve → blocked
+          ↓
+Owner identity approves
+          ↓
+revocation executes
+          ↓
+approval + execution audit trail retains both identities
+```
+
+This is the first AD NŪTUM milestone where separation of duties is enforced by authenticated identity rather than interface convention.

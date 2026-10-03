@@ -1,4 +1,4 @@
--- AD NŪTUM v1.0 emergency trust controls schema
+-- AD NŪTUM v1.2 human identity and separation of duties schema
 
 create extension if not exists pgcrypto;
 
@@ -52,16 +52,21 @@ create table if not exists authorization_requests (
 );
 
 alter table authorization_requests
-  add column if not exists environment_id uuid references environments(id) on delete set null;
+  add column if not exists environment_id uuid references environments(id) on delete set null,
+  add column if not exists requested_by_identity_id uuid references control_plane_identities(id) on delete set null;
 
 create table if not exists approval_decisions (
   id uuid primary key default gen_random_uuid(),
   authorization_request_id uuid not null references authorization_requests(id) on delete cascade,
   decided_by text not null,
+  decided_by_identity_id uuid references control_plane_identities(id) on delete set null,
   decision text not null check (decision in ('approved','rejected')),
   note text,
   created_at timestamptz not null default now()
 );
+
+alter table approval_decisions
+  add column if not exists decided_by_identity_id uuid references control_plane_identities(id) on delete set null;
 
 create table if not exists audit_events (
   id bigint generated always as identity primary key,
@@ -85,6 +90,22 @@ create table if not exists api_keys (
   created_at timestamptz not null default now()
 );
 
+
+create table if not exists control_plane_identities (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  name text not null,
+  role text not null check (role in ('operator','owner')),
+  token_prefix text not null,
+  token_hash text not null unique,
+  last4 text not null,
+  last_used_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists control_plane_identities_project_created_idx
+  on control_plane_identities(project_id, created_at asc);
 
 create table if not exists authority_receipts (
   id uuid primary key default gen_random_uuid(),
@@ -137,6 +158,7 @@ alter table authorization_requests enable row level security;
 alter table approval_decisions enable row level security;
 alter table audit_events enable row level security;
 alter table api_keys enable row level security;
+alter table control_plane_identities enable row level security;
 alter table authority_receipts
   add column if not exists signed_payload jsonb,
   add column if not exists signature text,
