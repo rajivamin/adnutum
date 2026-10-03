@@ -312,7 +312,8 @@ async function revokeSigningKey(
   env: Env,
   keyId: string,
   revokedBy: string,
-  reason: string
+  reason: string,
+  authorizationRequestId: string | null = null
 ) {
   const existing = await getSigningKey(env, keyId);
   if (!existing) return { error: "signing_key_not_found", status: 404 };
@@ -332,7 +333,7 @@ async function revokeSigningKey(
     })
   });
 
-  await addAuditEvent(env, env.DEFAULT_PROJECT_ID, null, "signing_key_revoked", {
+  await addAuditEvent(env, env.DEFAULT_PROJECT_ID, authorizationRequestId, "signing_key_revoked", {
     keyId,
     revokedBy,
     reason,
@@ -624,6 +625,25 @@ function evaluateProductionDeploy(): Omit<AuthorizationResult, "requestId"> {
   return policyResult("approval_required", "production-deploy-v1", "Production deployments require engineering lead approval.", "engineering_lead");
 }
 
+function evaluateSigningKeyRevocation(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
+  const keyId = contextString(input, "signingKeyId").trim();
+  const reason = contextString(input, "reason").trim();
+
+  if (!keyId) {
+    return policyResult("deny", "signing-key-revocation-v1", "Signing key ID is required.");
+  }
+  if (!reason) {
+    return policyResult("deny", "signing-key-revocation-v1", "Emergency revocation reason is required.");
+  }
+
+  return policyResult(
+    "approval_required",
+    "signing-key-revocation-v1",
+    "Signing-key trust revocation requires owner approval.",
+    "owner"
+  );
+}
+
 function evaluateDeleteRecord(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
   const scope = contextString(input, "scope").toLowerCase();
   if (scope === "production") {
@@ -650,6 +670,8 @@ async function evaluateAction(
       return evaluateProductionDeploy();
     case "delete_record":
       return evaluateDeleteRecord(input);
+    case "revoke_signing_key":
+      return evaluateSigningKeyRevocation(input);
     default:
       return policyResult("deny", "unsupported-action", `Action '${input.action}' is not supported in v0.7.`);
   }
@@ -865,22 +887,49 @@ async function recordHumanDecision(
   );
 
   let receipt = null;
+  let execution = null;
+
   if (input.decision === "approved") {
     const requestRow = existing.request as Record<string, any>;
-    const payload = (requestRow.payload ?? {}) as Record<string, unknown>;
-    receipt = await issueAuthorityReceipt(env, {
-      projectId,
-      requestId: id,
-      agentId: String(requestRow.agent_id),
-      environmentId: requestRow.environment_id ? String(requestRow.environment_id) : null,
-      action: String(requestRow.action),
-      scope: normalizeExecutionScope(payload as Record<string, any>),
-      issuedBy: input.decidedBy?.trim() || "human"
-    });
-    await addAuditEvent(env, projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
+    const payload = (requestRow.payload ?? {}) as Record<string, any>;
+
+    if (String(requestRow.action) === "revoke_signing_key") {
+      const keyId = String(payload.context?.signingKeyId || "");
+      const reason = String(payload.context?.reason || "");
+      const revokedBy = input.decidedBy?.trim() || "human";
+
+      const result = await revokeSigningKey(env, keyId, revokedBy, reason, id);
+      if ("error" in result) {
+        await addAuditEvent(env, projectId, id, "governed_action_failed", {
+          action: "revoke_signing_key",
+          keyId,
+          error: result.error
+        });
+        return { ...result, requestId: `req_${id}`, decision: input.decision };
+      }
+
+      execution = result;
+      await addAuditEvent(env, projectId, id, "governed_action_executed", {
+        action: "revoke_signing_key",
+        keyId,
+        revokedBy,
+        reason
+      });
+    } else {
+      receipt = await issueAuthorityReceipt(env, {
+        projectId,
+        requestId: id,
+        agentId: String(requestRow.agent_id),
+        environmentId: requestRow.environment_id ? String(requestRow.environment_id) : null,
+        action: String(requestRow.action),
+        scope: normalizeExecutionScope(payload as Record<string, any>),
+        issuedBy: input.decidedBy?.trim() || "human"
+      });
+      await addAuditEvent(env, projectId, id, "authority_receipt_issued", { receiptId: receipt.id });
+    }
   }
 
-  return { requestId: `req_${id}`, decision: input.decision, receipt, status: 200 };
+  return { requestId: `req_${id}`, decision: input.decision, receipt, execution, status: 200 };
 }
 
 
@@ -1398,19 +1447,37 @@ export default {
 
         const revokeSigningKeyMatch = url.pathname.match(/^\/v1\/developer\/signing-keys\/([^/]+)\/revoke$/);
         if (request.method === "POST" && revokeSigningKeyMatch) {
-          let input: { revokedBy?: string; reason?: string };
+          let input: { requestedBy?: string; reason?: string };
           try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
 
+          const keyId = decodeURIComponent(revokeSigningKeyMatch[1]);
           const reason = input.reason?.trim();
           if (!reason) return json({ error: "revocation_reason_required" }, 400);
 
-          const result = await revokeSigningKey(
-            env,
-            decodeURIComponent(revokeSigningKeyMatch[1]),
-            input.revokedBy?.trim() || "control-plane-owner",
-            reason
-          );
-          return "error" in result ? json({ error: result.error }, result.status) : json(result);
+          const signingKey = await getSigningKey(env, keyId);
+          if (!signingKey) return json({ error: "signing_key_not_found" }, 404);
+          if (signingKey.status === "revoked") return json({ error: "signing_key_already_revoked" }, 409);
+
+          const environment = await defaultEnvironment(env, projectId);
+          const auth: AuthContext = {
+            projectId,
+            environmentId: environment ? String(environment.id) : null,
+            environmentSlug: environment ? String(environment.slug) : "development",
+            source: "control_plane"
+          };
+
+          const authorizeInput: AuthorizeInput = {
+            agentId: input.requestedBy?.trim() || "control-plane-operator",
+            action: "revoke_signing_key",
+            context: {
+              signingKeyId: keyId,
+              reason,
+              currentStatus: signingKey.status
+            }
+          };
+
+          const result = evaluateSigningKeyRevocation(authorizeInput);
+          return json(await persistAuthorization(env, auth, authorizeInput, result), 202);
         }
 
         if (request.method === "GET" && url.pathname === "/v1/developer/quickstart") {

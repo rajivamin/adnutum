@@ -216,6 +216,7 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#signingKeyList")).toContainText("adnutum-ci-key");
   await expect(page.locator("#signingKeyList")).toContainText("active");
   await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toBeVisible();
+  await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toHaveText("Request revocation");
 
   expect(browserErrors, browserErrors.join("\n")).toEqual([]);
 });

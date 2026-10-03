@@ -1,4 +1,4 @@
-# AD NŪTUM — v1.0 Emergency Trust Controls
+# AD NŪTUM — v1.1 Govern the Governor
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v1.0 adds emergency signing-key trust revocation so AD NŪTUM can explicitly withdraw trust from a compromised key while preserving ordinary retired-key history.
+v1.1 governs emergency signing-key revocation through AD NŪTUM's own authorization and human-approval machinery.
 
 ## What v0.4 adds
 
@@ -713,3 +713,62 @@ If the configured Cloudflare signing key itself has been revoked:
 - operators can still inspect trust state and install a replacement key
 
 This keeps emergency trust distribution available during a signing incident instead of making the trust endpoint depend on the compromised key remaining usable.
+
+
+## v1.1 govern the governor
+
+v1.1 removes immediate signing-key revocation from the Control Plane.
+
+A revocation now follows the same authority model AD NŪTUM applies to external agents:
+
+1. an operator requests revocation
+2. AD NŪTUM creates an authorization request
+3. policy returns `approval_required`
+4. the required approver is `owner`
+5. the key remains unchanged while the request is pending
+6. rejection leaves trust unchanged
+7. approval executes the key revocation
+8. the execution and revocation events are linked to the original authorization request
+
+The governed action is:
+
+`revoke_signing_key`
+
+Its policy is:
+
+`signing-key-revocation-v1`
+
+### Control Plane
+
+The Signing trust button is now:
+
+**Request revocation**
+
+instead of:
+
+**Revoke trust**
+
+After a request is submitted, the operator is explicitly told that no trust change has happened yet.
+
+The request then appears in the normal Requests / Awaiting human workflow, where the owner can approve or reject it.
+
+### Audit lineage
+
+A successful governed revocation records:
+
+- authorization evaluation
+- approval requested
+- human approval
+- authorization issued
+- governed action executed
+- signing key revoked
+
+The final revocation event carries the same authorization request ID, making the full decision chain traceable.
+
+### SDK
+
+The SDK method is now:
+
+`requestSigningKeyRevocation(keyId, reason, requestedBy?)`
+
+The method returns the normal authorization result rather than pretending the key was revoked immediately.
