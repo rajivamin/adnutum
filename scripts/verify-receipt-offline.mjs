@@ -41,8 +41,16 @@ const keys = Array.isArray(keySet?.keys) ? keySet.keys : [];
 const publicJwk = keys.find(key => key.kid === receipt.signing_key_id);
 
 if (!publicJwk) {
-  console.error("SIGNATURE INVALID");
-  console.error(`No public key found for kid: ${receipt.signing_key_id || "(missing)"}`);
+  const revoked = Array.isArray(keySet?.revokedKeyIds) &&
+    keySet.revokedKeyIds.includes(receipt.signing_key_id);
+
+  if (revoked) {
+    console.error("TRUST REVOKED");
+    console.error(`Signing key has been revoked: ${receipt.signing_key_id}`);
+  } else {
+    console.error("SIGNATURE INVALID");
+    console.error(`No trusted public key found for kid: ${receipt.signing_key_id || "(missing)"}`);
+  }
   process.exit(1);
 }
 

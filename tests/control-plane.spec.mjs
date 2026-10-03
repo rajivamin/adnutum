@@ -149,6 +149,26 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
       });
     }
 
+    if (url.pathname === "/v1/developer/signing-keys") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          signingKeys: [{
+            id: "adnutum-ci-key",
+            public_jwk: { kty: "EC", crv: "P-256", x: "ci-x", y: "ci-y", use: "sig", alg: "ES256", kid: "adnutum-ci-key" },
+            algorithm: "ES256",
+            status: "active",
+            activated_at: "2026-10-02T00:00:00.000Z",
+            retired_at: null,
+            revoked_at: null,
+            revoked_by: null,
+            revocation_reason: null
+          }]
+        })
+      });
+    }
+
     if (url.pathname === "/v1/developer/quickstart") {
       return route.fulfill({
         status: 200,
@@ -195,6 +215,7 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#createKeyBtn")).toBeVisible();
   await expect(page.locator("#signingKeyList")).toContainText("adnutum-ci-key");
   await expect(page.locator("#signingKeyList")).toContainText("active");
+  await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toBeVisible();
 
   expect(browserErrors, browserErrors.join("\n")).toEqual([]);
 });

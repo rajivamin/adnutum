@@ -97,10 +97,22 @@ export interface VerifyReceiptResult {
 
 export interface VerificationKeyLifecycle {
   kid: string;
-  status: "active" | "retired";
+  status: "active" | "retired" | "revoked";
   algorithm: string;
   activatedAt: string;
   retiredAt?: string | null;
+}
+
+export interface SigningKeyRecord {
+  id: string;
+  public_jwk: JsonWebKey;
+  algorithm: string;
+  status: "active" | "retired" | "revoked";
+  activated_at: string;
+  retired_at?: string | null;
+  revoked_at?: string | null;
+  revoked_by?: string | null;
+  revocation_reason?: string | null;
 }
 
 export interface VerificationKeySet {
@@ -108,6 +120,7 @@ export interface VerificationKeySet {
   keyLifecycle: VerificationKeyLifecycle[];
   revokedKeyIds: string[];
   signingConfigured: boolean;
+  signingOperational?: boolean;
   activeKeyId?: string | null;
 }
 
@@ -179,6 +192,24 @@ export class AdNutum {
 
   async getVerificationKeys(): Promise<VerificationKeySet> {
     return this.request<VerificationKeySet>("/.well-known/jwks.json");
+  }
+
+  async listSigningKeys() {
+    return this.request<{ signingKeys: SigningKeyRecord[] }>("/v1/developer/signing-keys");
+  }
+
+  async revokeSigningKey(keyId: string, reason: string, revokedBy = "control-plane-owner") {
+    return this.request<{
+      keyId: string;
+      revoked: boolean;
+      wasActive: boolean;
+      revokedAt: string;
+      revokedBy: string;
+      reason: string;
+    }>(`/v1/developer/signing-keys/${encodeURIComponent(keyId)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({ reason, revokedBy })
+    });
   }
 
   async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
