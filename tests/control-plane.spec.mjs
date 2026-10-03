@@ -57,6 +57,39 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
       });
     }
 
+    if (url.pathname === "/v1/requests/req-ci") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          request: {
+            id: "req-ci",
+            action: "refund_customer",
+            decision: "approval_required",
+            required_approver: "owner",
+            reason: "CI request requires owner approval.",
+            created_at: "2026-10-01T00:00:00.000Z",
+            payload: { amount: 7500 },
+            agent: { name: "finance-agent", external_key: "finance-agent" },
+            requester: { id: "human-operator-ci", name: "CI Operator", role: "operator" }
+          },
+          approvals: [],
+          events: [
+            {
+              id: "event-ci-1",
+              event_type: "authorization_evaluated",
+              created_at: "2026-10-01T00:00:00.000Z"
+            },
+            {
+              id: "event-ci-2",
+              event_type: "approval_requested",
+              created_at: "2026-10-01T00:00:01.000Z"
+            }
+          ]
+        })
+      });
+    }
+
     if (url.pathname === "/v1/agents") {
       return route.fulfill({
         status: 200,
