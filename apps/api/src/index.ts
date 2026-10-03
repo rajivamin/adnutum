@@ -879,7 +879,7 @@ async function getRequest(env: Env, projectId: string, rawId: string) {
   const requestQuery = new URLSearchParams({
     id: `eq.${id}`,
     project_id: `eq.${projectId}`,
-    select: "*,agent:agents(external_key,name),environment:environments(name,slug)",
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),requester:control_plane_identities!requested_by_identity_id(id,name,role)",
     limit: "1"
   });
   const approvalQuery = new URLSearchParams({
@@ -906,7 +906,7 @@ async function getRequest(env: Env, projectId: string, rawId: string) {
 async function listRequests(env: Env, projectId: string, limit: number) {
   const query = new URLSearchParams({
     project_id: `eq.${projectId}`,
-    select: "*,agent:agents(external_key,name),environment:environments(name,slug),approval_decisions(decision,decided_by,created_at)",
+    select: "*,agent:agents(external_key,name),environment:environments(name,slug),requester:control_plane_identities!requested_by_identity_id(id,name,role),approval_decisions(decision,decided_by,decided_by_identity_id,created_at)",
     order: "created_at.desc",
     limit: String(limit)
   });
@@ -1520,6 +1520,15 @@ export default {
         if (request.method === "GET" && url.pathname === "/v1/developer/human-identities") {
           return json({ identities: await listHumanIdentities(env, projectId) });
         }
+
+        if (request.method === "GET" && url.pathname === "/v1/developer/human-identities/me") {
+          const identity = await authenticateHumanIdentity(request, env);
+          if (!identity || identity.projectId !== projectId) {
+            return json({ error: "human_identity_required" }, 401);
+          }
+          return json({ identity });
+        }
+
 
         if (request.method === "POST" && url.pathname === "/v1/developer/human-identities") {
           let input: { name?: string; role?: string };
