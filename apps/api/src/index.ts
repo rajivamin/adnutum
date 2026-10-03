@@ -312,7 +312,8 @@ async function revokeSigningKey(
   env: Env,
   keyId: string,
   revokedBy: string,
-  reason: string
+  reason: string,
+  authorizationRequestId: string | null = null
 ) {
   const existing = await getSigningKey(env, keyId);
   if (!existing) return { error: "signing_key_not_found", status: 404 };
@@ -332,7 +333,7 @@ async function revokeSigningKey(
     })
   });
 
-  await addAuditEvent(env, env.DEFAULT_PROJECT_ID, null, "signing_key_revoked", {
+  await addAuditEvent(env, env.DEFAULT_PROJECT_ID, authorizationRequestId, "signing_key_revoked", {
     keyId,
     revokedBy,
     reason,
@@ -897,7 +898,7 @@ async function recordHumanDecision(
       const reason = String(payload.context?.reason || "");
       const revokedBy = input.decidedBy?.trim() || "human";
 
-      const result = await revokeSigningKey(env, keyId, revokedBy, reason);
+      const result = await revokeSigningKey(env, keyId, revokedBy, reason, id);
       if ("error" in result) {
         await addAuditEvent(env, projectId, id, "governed_action_failed", {
           action: "revoke_signing_key",
