@@ -26,56 +26,67 @@ async function readJson(source) {
   return JSON.parse(fs.readFileSync(source, "utf8"));
 }
 
-const [receiptSource = "receipt.json", keySource = "https://adnutum-api.ironpalmsumo.workers.dev/.well-known/jwks.json"] = process.argv.slice(2);
+async function main() {
+  const [receiptSource = "receipt.json", keySource = "https://adnutum-api.ironpalmsumo.workers.dev/.well-known/jwks.json"] = process.argv.slice(2);
 
-const receipt = await readJson(receiptSource);
-const keySet = await readJson(keySource);
+  const receipt = await readJson(receiptSource);
+  const keySet = await readJson(keySource);
 
-if (!receipt?.signed_payload || !receipt?.signature || receipt?.signature_algorithm !== "ES256") {
-  console.error("SIGNATURE INVALID");
-  console.error("Receipt is missing an ES256 signed payload or signature.");
-  process.exit(1);
-}
-
-const keys = Array.isArray(keySet?.keys) ? keySet.keys : [];
-const publicJwk = keys.find(key => key.kid === receipt.signing_key_id);
-
-if (!publicJwk) {
-  const revoked = Array.isArray(keySet?.revokedKeyIds) &&
-    keySet.revokedKeyIds.includes(receipt.signing_key_id);
-
-  if (revoked) {
-    console.error("TRUST REVOKED");
-    console.error(`Signing key has been revoked: ${receipt.signing_key_id}`);
-  } else {
+  if (!receipt?.signed_payload || !receipt?.signature || receipt?.signature_algorithm !== "ES256") {
     console.error("SIGNATURE INVALID");
-    console.error(`No trusted public key found for kid: ${receipt.signing_key_id || "(missing)"}`);
+    console.error("Receipt is missing an ES256 signed payload or signature.");
+    process.exitCode = 1;
+    return;
   }
-  process.exit(1);
+
+  const keys = Array.isArray(keySet?.keys) ? keySet.keys : [];
+  const publicJwk = keys.find(key => key.kid === receipt.signing_key_id);
+
+  if (!publicJwk) {
+    const revoked = Array.isArray(keySet?.revokedKeyIds) &&
+      keySet.revokedKeyIds.includes(receipt.signing_key_id);
+
+    if (revoked) {
+      console.error("TRUST REVOKED");
+      console.error(`Signing key has been revoked: ${receipt.signing_key_id}`);
+    } else {
+      console.error("SIGNATURE INVALID");
+      console.error(`No trusted public key found for kid: ${receipt.signing_key_id || "(missing)"}`);
+    }
+
+    process.exitCode = 1;
+    return;
+  }
+
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    publicJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+
+  const valid = await crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    fromBase64Url(receipt.signature),
+    new TextEncoder().encode(stableJson(receipt.signed_payload))
+  );
+
+  if (!valid) {
+    console.error("SIGNATURE INVALID");
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log("SIGNATURE VALID");
+  console.log(`Receipt: ${receipt.id || receipt.signed_payload.receiptId || "unknown"}`);
+  console.log(`Action: ${receipt.action || receipt.signed_payload.action || "unknown"}`);
+  console.log(`Key ID: ${receipt.signing_key_id}`);
+  console.log("Verified locally without calling /v1/verify.");
 }
 
-const key = await crypto.subtle.importKey(
-  "jwk",
-  publicJwk,
-  { name: "ECDSA", namedCurve: "P-256" },
-  false,
-  ["verify"]
-);
-
-const valid = await crypto.subtle.verify(
-  { name: "ECDSA", hash: "SHA-256" },
-  key,
-  fromBase64Url(receipt.signature),
-  new TextEncoder().encode(stableJson(receipt.signed_payload))
-);
-
-if (!valid) {
-  console.error("SIGNATURE INVALID");
-  process.exit(1);
-}
-
-console.log("SIGNATURE VALID");
-console.log(`Receipt: ${receipt.id || receipt.signed_payload.receiptId || "unknown"}`);
-console.log(`Action: ${receipt.action || receipt.signed_payload.action || "unknown"}`);
-console.log(`Key ID: ${receipt.signing_key_id}`);
-console.log("Verified locally without calling /v1/verify.");
+main().catch(error => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
