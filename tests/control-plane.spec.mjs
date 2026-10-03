@@ -229,6 +229,9 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
 
   await expect(page.locator("#tokenModal")).toBeHidden();
   await expect(page.locator("#statRequests")).toHaveText("1");
+  await page.locator("[data-open-request='req-ci']").click();
+  await expect(page.locator("#decisionError")).toBeVisible();
+  await page.locator("#closeDetail").click();
   await expect(page.locator("#statAgents")).toHaveText("1");
 
   await page.getByRole("button", { name: "Receipts" }).click();
