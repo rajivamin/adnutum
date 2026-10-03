@@ -229,8 +229,82 @@ async function signingMaterial(env: Env) {
   };
 }
 
-async function signPayload(env: Env, payload: Record<string, unknown>) {
+async function listSigningKeys(env: Env) {
+  return db<Array<Record<string, any>>>(env, "signing_keys?select=*&order=activated_at.desc");
+}
+
+async function getSigningKey(env: Env, keyId: string) {
+  const query = new URLSearchParams({
+    id: `eq.${keyId}`,
+    select: "*",
+    limit: "1"
+  });
+  const rows = await db<Array<Record<string, any>>>(env, `signing_keys?${query.toString()}`);
+  return rows[0] ?? null;
+}
+
+async function ensureCurrentSigningKeyRegistered(env: Env) {
   const material = await signingMaterial(env);
+  if (!material) return null;
+
+  const existing = await getSigningKey(env, material.keyId);
+  if (existing?.status === "revoked") {
+    throw new Error("Configured signing key is revoked and cannot be used.");
+  }
+
+  const now = new Date().toISOString();
+
+  const activeQuery = new URLSearchParams({
+    status: "eq.active",
+    id: `neq.${material.keyId}`
+  });
+  await db(env, `signing_keys?${activeQuery.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      status: "retired",
+      retired_at: now
+    })
+  });
+
+  if (existing) {
+    const query = new URLSearchParams({ id: `eq.${material.keyId}` });
+    await db(env, `signing_keys?${query.toString()}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        public_jwk: material.publicJwk,
+        algorithm: "ES256",
+        status: "active",
+        retired_at: null,
+        revoked_at: null
+      })
+    });
+  } else {
+    await db(env, "signing_keys", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        id: material.keyId,
+        public_jwk: material.publicJwk,
+        algorithm: "ES256",
+        status: "active",
+        activated_at: now
+      })
+    });
+  }
+
+  return material;
+}
+
+async function trustedPublicJwkForKey(env: Env, keyId: string) {
+  const row = await getSigningKey(env, keyId);
+  if (!row || row.status === "revoked") return null;
+  return row.public_jwk as JsonWebKey;
+}
+
+async function signPayload(env: Env, payload: Record<string, unknown>) {
+  const material = await ensureCurrentSigningKeyRegistered(env);
   if (!material) return null;
 
   const bytes = new TextEncoder().encode(stableJson(payload));
@@ -878,16 +952,15 @@ async function verifyStoredReceiptSignature(env: Env, receipt: Record<string, an
     !receipt.signing_key_id
   ) return false;
 
-  const material = await signingMaterial(env);
-  if (!material) return false;
-  if (receipt.signing_key_id !== material.keyId) return false;
+  const publicJwk = await trustedPublicJwkForKey(env, String(receipt.signing_key_id));
+  if (!publicJwk) return false;
 
   const expected = expectedSignedReceiptPayload(receipt);
   if (stableJson(expected) !== stableJson(receipt.signed_payload)) return false;
 
   const publicKey = await crypto.subtle.importKey(
     "jwk",
-    material.publicJwk,
+    publicJwk,
     { name: "ECDSA", namedCurve: "P-256" },
     false,
     ["verify"]
@@ -1189,7 +1262,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.8.0",
+        version: "0.9.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
         receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
@@ -1197,10 +1270,28 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/.well-known/jwks.json") {
-      const material = await signingMaterial(env);
+      assertConfigured(env);
+      await ensureCurrentSigningKeyRegistered(env);
+      const registry = await listSigningKeys(env);
+      const trusted = registry.filter(row => row.status !== "revoked");
+
       return json({
-        keys: material ? [material.publicJwk] : [],
-        signingConfigured: Boolean(material)
+        keys: trusted.map(row => ({
+          ...(row.public_jwk || {}),
+          kid: row.id
+        })),
+        keyLifecycle: trusted.map(row => ({
+          kid: row.id,
+          status: row.status,
+          algorithm: row.algorithm,
+          activatedAt: row.activated_at,
+          retiredAt: row.retired_at ?? null
+        })),
+        revokedKeyIds: registry
+          .filter(row => row.status === "revoked")
+          .map(row => row.id),
+        signingConfigured: Boolean(env.SIGNING_PRIVATE_JWK),
+        activeKeyId: registry.find(row => row.status === "active")?.id ?? null
       });
     }
 
