@@ -198,18 +198,18 @@ export class AdNutum {
     return this.request<{ signingKeys: SigningKeyRecord[] }>("/v1/developer/signing-keys");
   }
 
-  async revokeSigningKey(keyId: string, reason: string, revokedBy = "control-plane-owner") {
-    return this.request<{
-      keyId: string;
-      revoked: boolean;
-      wasActive: boolean;
-      revokedAt: string;
-      revokedBy: string;
-      reason: string;
-    }>(`/v1/developer/signing-keys/${encodeURIComponent(keyId)}/revoke`, {
-      method: "POST",
-      body: JSON.stringify({ reason, revokedBy })
-    });
+  async requestSigningKeyRevocation(
+    keyId: string,
+    reason: string,
+    requestedBy = "control-plane-operator"
+  ) {
+    return this.request<AuthorizeResult>(
+      `/v1/developer/signing-keys/${encodeURIComponent(keyId)}/revoke`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason, requestedBy })
+      }
+    );
   }
 
   async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
