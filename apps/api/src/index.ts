@@ -298,10 +298,56 @@ async function ensureCurrentSigningKeyRegistered(env: Env) {
 }
 
 async function trustedPublicJwkForKey(env: Env, keyId: string) {
-  await ensureCurrentSigningKeyRegistered(env);
+  try {
+    await ensureCurrentSigningKeyRegistered(env);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Configured signing key is revoked")) throw error;
+  }
   const row = await getSigningKey(env, keyId);
   if (!row || row.status === "revoked") return null;
   return row.public_jwk as JsonWebKey;
+}
+
+async function revokeSigningKey(
+  env: Env,
+  keyId: string,
+  revokedBy: string,
+  reason: string
+) {
+  const existing = await getSigningKey(env, keyId);
+  if (!existing) return { error: "signing_key_not_found", status: 404 };
+  if (existing.status === "revoked") return { error: "signing_key_already_revoked", status: 409 };
+
+  const now = new Date().toISOString();
+  const query = new URLSearchParams({ id: `eq.${keyId}` });
+
+  await db(env, `signing_keys?${query.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      status: "revoked",
+      revoked_at: now,
+      revoked_by: revokedBy,
+      revocation_reason: reason
+    })
+  });
+
+  await addAuditEvent(env, env.DEFAULT_PROJECT_ID, null, "signing_key_revoked", {
+    keyId,
+    revokedBy,
+    reason,
+    wasActive: existing.status === "active"
+  });
+
+  return {
+    keyId,
+    revoked: true,
+    wasActive: existing.status === "active",
+    revokedAt: now,
+    revokedBy,
+    reason,
+    status: 200
+  };
 }
 
 async function signPayload(env: Env, payload: Record<string, unknown>) {
@@ -1102,8 +1148,14 @@ async function verifyAuthorityReceipt(
   const receipt = await getReceipt(env, auth.projectId, input.receiptId.trim());
   if (!receipt) return deny("receipt_not_found");
 
-  if (receipt.signature && !(await verifyStoredReceiptSignature(env, receipt))) {
-    return deny("signature_invalid", receipt);
+  if (receipt.signature && receipt.signing_key_id) {
+    const signingKey = await getSigningKey(env, String(receipt.signing_key_id));
+    if (signingKey?.status === "revoked") {
+      return deny("signing_key_revoked", receipt);
+    }
+    if (!(await verifyStoredReceiptSignature(env, receipt))) {
+      return deny("signature_invalid", receipt);
+    }
   }
 
   const chain = await receiptChainIsActive(env, auth.projectId, receipt);
@@ -1263,7 +1315,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "0.9.0",
+        version: "1.0.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
         receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
@@ -1272,7 +1324,18 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/.well-known/jwks.json") {
       assertConfigured(env);
-      await ensureCurrentSigningKeyRegistered(env);
+
+      let signingOperational = true;
+      try {
+        await ensureCurrentSigningKeyRegistered(env);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("Configured signing key is revoked")) {
+          signingOperational = false;
+        } else {
+          throw error;
+        }
+      }
+
       const registry = await listSigningKeys(env);
       const trusted = registry.filter(row => row.status !== "revoked");
 
@@ -1292,6 +1355,7 @@ export default {
           .filter(row => row.status === "revoked")
           .map(row => row.id),
         signingConfigured: Boolean(env.SIGNING_PRIVATE_JWK),
+        signingOperational,
         activeKeyId: registry.find(row => row.status === "active")?.id ?? null
       });
     }
@@ -1321,6 +1385,32 @@ export default {
         const revoke = url.pathname.match(/^\/v1\/developer\/api-keys\/([^/]+)$/);
         if (request.method === "DELETE" && revoke) {
           return json(await revokeApiKey(env, projectId, revoke[1]));
+        }
+
+        if (request.method === "GET" && url.pathname === "/v1/developer/signing-keys") {
+          try {
+            await ensureCurrentSigningKeyRegistered(env);
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes("Configured signing key is revoked")) throw error;
+          }
+          return json({ signingKeys: await listSigningKeys(env) });
+        }
+
+        const revokeSigningKeyMatch = url.pathname.match(/^\/v1\/developer\/signing-keys\/([^/]+)\/revoke$/);
+        if (request.method === "POST" && revokeSigningKeyMatch) {
+          let input: { revokedBy?: string; reason?: string };
+          try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+
+          const reason = input.reason?.trim();
+          if (!reason) return json({ error: "revocation_reason_required" }, 400);
+
+          const result = await revokeSigningKey(
+            env,
+            decodeURIComponent(revokeSigningKeyMatch[1]),
+            input.revokedBy?.trim() || "control-plane-owner",
+            reason
+          );
+          return "error" in result ? json({ error: result.error }, result.status) : json(result);
         }
 
         if (request.method === "GET" && url.pathname === "/v1/developer/quickstart") {
