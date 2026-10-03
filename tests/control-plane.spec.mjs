@@ -10,10 +10,18 @@ function readControlPlaneHtml() {
 test("Control Plane unlocks and Receipts + Developer tabs render without browser errors", async ({ page }) => {
   const html = readControlPlaneHtml();
   const browserErrors = [];
+  let expectGovernedDecision403 = false;
 
   page.on("pageerror", error => browserErrors.push(error.message));
   page.on("console", message => {
-    if (message.type() === "error") browserErrors.push(message.text());
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (
+      expectGovernedDecision403 &&
+      text.includes("Failed to load resource") &&
+      text.includes("403")
+    ) return;
+    browserErrors.push(text);
   });
 
   await page.route("http://adnutum.test/**", async route => {
@@ -274,10 +282,12 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#tokenModal")).toBeHidden();
   await expect(page.locator("#statRequests")).toHaveText("1");
   await page.locator("#recentRequests [data-open-request='req-ci']").click();
+  expectGovernedDecision403 = true;
   await page.locator("#approveDetail").click();
   await expect(page.locator("#decisionError")).toHaveText(
     "Blocked: an Owner identity is required for this decision."
   );
+  expectGovernedDecision403 = false;
   await page.locator("#closeDetail").click();
   await expect(page.locator("#statAgents")).toHaveText("1");
 
