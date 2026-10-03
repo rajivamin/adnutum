@@ -298,6 +298,7 @@ async function ensureCurrentSigningKeyRegistered(env: Env) {
 }
 
 async function trustedPublicJwkForKey(env: Env, keyId: string) {
+  await ensureCurrentSigningKeyRegistered(env);
   const row = await getSigningKey(env, keyId);
   if (!row || row.status === "revoked") return null;
   return row.public_jwk as JsonWebKey;
