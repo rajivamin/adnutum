@@ -95,9 +95,20 @@ export interface VerifyReceiptResult {
   verifiedAt: string;
 }
 
+export interface VerificationKeyLifecycle {
+  kid: string;
+  status: "active" | "retired";
+  algorithm: string;
+  activatedAt: string;
+  retiredAt?: string | null;
+}
+
 export interface VerificationKeySet {
   keys: JsonWebKey[];
+  keyLifecycle: VerificationKeyLifecycle[];
+  revokedKeyIds: string[];
   signingConfigured: boolean;
+  activeKeyId?: string | null;
 }
 
 function stableJson(value: unknown): string {

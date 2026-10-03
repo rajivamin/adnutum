@@ -1,4 +1,4 @@
--- AD NŪTUM v0.8 signed authority receipts schema
+-- AD NŪTUM v0.9 signing key lifecycle schema
 
 create extension if not exists pgcrypto;
 
@@ -146,6 +146,22 @@ alter table authority_receipts
 create index if not exists authority_receipts_signing_key_idx
   on authority_receipts(signing_key_id)
   where signing_key_id is not null;
+
+create table if not exists signing_keys (
+  id text primary key,
+  public_jwk jsonb not null,
+  algorithm text not null default 'ES256',
+  status text not null default 'active' check (status in ('active','retired','revoked')),
+  activated_at timestamptz not null default now(),
+  retired_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists signing_keys_status_activated_idx
+  on signing_keys(status, activated_at desc);
+
+alter table signing_keys enable row level security;
 
 alter table authority_receipts enable row level security;
 
