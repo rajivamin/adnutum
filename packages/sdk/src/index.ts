@@ -176,7 +176,10 @@ export interface HumanIdentityRecord {
   token_prefix: string;
   last4: string;
   last_used_at?: string | null;
+  token_rotated_at?: string | null;
   revoked_at?: string | null;
+  revoked_by?: string | null;
+  revocation_reason?: string | null;
   created_at: string;
 }
 
@@ -232,6 +235,33 @@ export class AdNutum {
     return this.request<{ identity: HumanIdentityRecord; token: string }>("/v1/developer/human-identities", {
       method: "POST",
       body: JSON.stringify({ name, role })
+    });
+  }
+
+  async rotateHumanIdentityToken(identityId: string) {
+    return this.request<{
+      identityId: string;
+      name: string;
+      role: "operator" | "owner";
+      token: string;
+      rotatedAt: string;
+    }>(`/v1/developer/human-identities/${encodeURIComponent(identityId)}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
+  async revokeHumanIdentity(identityId: string, reason: string) {
+    return this.request<{
+      identityId: string;
+      name: string;
+      role: "operator" | "owner";
+      revokedAt: string;
+      revokedBy: string;
+      reason: string;
+    }>(`/v1/developer/human-identities/${encodeURIComponent(identityId)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
     });
   }
 
