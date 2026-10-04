@@ -1,4 +1,4 @@
--- AD NŪTUM v1.2 human identity and separation of duties schema
+-- AD NŪTUM v1.3 human identity lifecycle schema
 
 create extension if not exists pgcrypto;
 
@@ -158,6 +158,11 @@ alter table authorization_requests enable row level security;
 alter table approval_decisions enable row level security;
 alter table audit_events enable row level security;
 alter table api_keys enable row level security;
+alter table control_plane_identities
+  add column if not exists token_rotated_at timestamptz,
+  add column if not exists revoked_by text,
+  add column if not exists revocation_reason text;
+
 alter table control_plane_identities enable row level security;
 alter table authority_receipts
   add column if not exists signed_payload jsonb,
