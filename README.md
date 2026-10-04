@@ -1,4 +1,4 @@
-# AD NŪTUM — v1.2 Human Identity + Separation of Duties
+# AD NŪTUM — v1.3 Human Identity Lifecycle
 
 **Programmable authority for AI agents.**
 
@@ -12,7 +12,7 @@ The response is one of:
 - `deny`
 - `approval_required`
 
-v1.2 adds individual Control Plane identities and enforces separation of duties for governed trust revocation.
+v1.3 adds rotation, revocation, explicit revoked-token handling, last-Owner protection, and browser sign-out for human Control Plane identities.
 
 ## What v0.4 adds
 
@@ -865,3 +865,85 @@ approval + execution audit trail retains both identities
 ```
 
 This is the first AD NŪTUM milestone where separation of duties is enforced by authenticated identity rather than interface convention.
+
+
+## v1.3 human identity lifecycle
+
+v1.3 completes the lifecycle of individual Control Plane credentials.
+
+### Rotate token
+
+An active human identity can rotate its credential.
+
+Rotation:
+
+- immediately replaces the stored credential hash
+- invalidates the previous raw token
+- returns a new raw token exactly once
+- updates the masked last-four display
+- records `token_rotated_at`
+- writes a `human_identity_token_rotated` audit event
+
+The Control Plane uses the same one-time token reveal behavior introduced in v1.2.1.
+
+### Revoke identity
+
+An active human identity can be revoked with an explicit reason.
+
+Revocation:
+
+- sets `revoked_at`
+- records who performed the revocation
+- stores the revocation reason
+- causes the old token to stop authenticating immediately
+- writes a `human_identity_revoked` audit event
+
+Revoked identities remain visible as durable audit history instead of being deleted.
+
+### Revoked-token detection
+
+A previously valid token from a revoked identity is distinguishable from a missing or unknown token.
+
+AD NŪTUM returns:
+
+`human_identity_revoked`
+
+This allows operators to prove that a credential was intentionally killed rather than simply mistyped or omitted.
+
+### Last Owner safeguard
+
+AD NŪTUM refuses to revoke the final active Owner identity.
+
+The API returns:
+
+`last_active_owner_cannot_be_revoked`
+
+This prevents an administrator from accidentally removing the final human approver required by governed actions.
+
+### Stop acting as this identity
+
+The Acting identity panel now includes:
+
+**Stop acting as this identity**
+
+This clears the human token from browser session storage, clears the password field, and resets the active human identity without closing the bootstrap Control Plane session.
+
+### Control Plane lifecycle controls
+
+Each active human identity now exposes:
+
+- **Rotate token**
+- **Revoke identity**
+
+Revoked identities remain listed with their lifecycle history and revocation reason.
+
+If the currently acting identity rotates or revokes itself, the browser automatically stops acting as that identity because the credential it held is no longer valid.
+
+### Audit events
+
+Human credential lifecycle changes add project-level audit events:
+
+- `human_identity_token_rotated`
+- `human_identity_revoked`
+
+These events preserve the identity name, role, actor, and lifecycle reason where applicable.

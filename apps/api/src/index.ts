@@ -68,6 +68,11 @@ interface HumanIdentity {
   role: "operator" | "owner";
 }
 
+interface HumanIdentityAuthResult {
+  identity: HumanIdentity | null;
+  error?: "human_identity_required" | "human_identity_revoked";
+}
+
 interface AuthContext {
   projectId: string;
   environmentId: string | null;
@@ -152,20 +157,25 @@ function controlPlaneRequired(request: Request, env: Env): Response | null {
     : json({ error: "control_plane_unauthorized" }, 401);
 }
 
-async function authenticateHumanIdentity(request: Request, env: Env): Promise<HumanIdentity | null> {
+async function inspectHumanIdentityCredential(
+  request: Request,
+  env: Env
+): Promise<HumanIdentityAuthResult> {
   const raw = request.headers.get("x-control-plane-identity-token")?.trim() || "";
-  if (!raw.startsWith("adn_human_")) return null;
+  if (!raw.startsWith("adn_human_")) {
+    return { identity: null, error: "human_identity_required" };
+  }
 
   const tokenHash = await sha256(raw);
   const query = new URLSearchParams({
     token_hash: `eq.${tokenHash}`,
-    revoked_at: "is.null",
-    select: "id,project_id,name,role",
+    select: "id,project_id,name,role,revoked_at",
     limit: "1"
   });
   const rows = await db<Array<Record<string, any>>>(env, `control_plane_identities?${query.toString()}`);
   const row = rows[0];
-  if (!row) return null;
+  if (!row) return { identity: null, error: "human_identity_required" };
+  if (row.revoked_at) return { identity: null, error: "human_identity_revoked" };
 
   const used = new URLSearchParams({ id: `eq.${row.id}` });
   await db(env, `control_plane_identities?${used.toString()}`, {
@@ -175,17 +185,23 @@ async function authenticateHumanIdentity(request: Request, env: Env): Promise<Hu
   });
 
   return {
-    id: String(row.id),
-    projectId: String(row.project_id),
-    name: String(row.name),
-    role: row.role === "owner" ? "owner" : "operator"
+    identity: {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      name: String(row.name),
+      role: row.role === "owner" ? "owner" : "operator"
+    }
   };
+}
+
+async function authenticateHumanIdentity(request: Request, env: Env): Promise<HumanIdentity | null> {
+  return (await inspectHumanIdentityCredential(request, env)).identity;
 }
 
 async function listHumanIdentities(env: Env, projectId: string) {
   const query = new URLSearchParams({
     project_id: `eq.${projectId}`,
-    select: "id,name,role,token_prefix,last4,last_used_at,revoked_at,created_at",
+    select: "id,name,role,token_prefix,last4,last_used_at,token_rotated_at,revoked_at,revoked_by,revocation_reason,created_at",
     order: "created_at.asc"
   });
   return db<Array<Record<string, unknown>>>(env, `control_plane_identities?${query.toString()}`);
@@ -217,6 +233,117 @@ async function createHumanIdentity(
   return {
     identity: created[0] ?? null,
     token: rawToken
+  };
+}
+
+async function getHumanIdentity(env: Env, projectId: string, identityId: string) {
+  const query = new URLSearchParams({
+    id: `eq.${identityId}`,
+    project_id: `eq.${projectId}`,
+    select: "*",
+    limit: "1"
+  });
+  const rows = await db<Array<Record<string, any>>>(env, `control_plane_identities?${query.toString()}`);
+  return rows[0] ?? null;
+}
+
+async function activeOwnerCount(env: Env, projectId: string) {
+  const query = new URLSearchParams({
+    project_id: `eq.${projectId}`,
+    role: "eq.owner",
+    revoked_at: "is.null",
+    select: "id"
+  });
+  const rows = await db<Array<{ id: string }>>(env, `control_plane_identities?${query.toString()}`);
+  return rows.length;
+}
+
+async function rotateHumanIdentityToken(
+  env: Env,
+  projectId: string,
+  identityId: string,
+  rotatedBy: string
+) {
+  const identity = await getHumanIdentity(env, projectId, identityId);
+  if (!identity) return { error: "human_identity_not_found", status: 404 };
+  if (identity.revoked_at) return { error: "human_identity_revoked", status: 409 };
+
+  const rawToken = "adn_human_" + randomToken(28);
+  const tokenHash = await sha256(rawToken);
+  const rotatedAt = new Date().toISOString();
+  const query = new URLSearchParams({ id: `eq.${identityId}`, project_id: `eq.${projectId}` });
+
+  await db(env, `control_plane_identities?${query.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      token_hash: tokenHash,
+      last4: rawToken.slice(-4),
+      token_rotated_at: rotatedAt,
+      last_used_at: null
+    })
+  });
+
+  await addAuditEvent(env, projectId, null, "human_identity_token_rotated", {
+    identityId,
+    identityName: identity.name,
+    role: identity.role,
+    rotatedBy
+  });
+
+  return {
+    identityId,
+    name: identity.name,
+    role: identity.role,
+    token: rawToken,
+    rotatedAt,
+    status: 200
+  };
+}
+
+async function revokeHumanIdentity(
+  env: Env,
+  projectId: string,
+  identityId: string,
+  revokedBy: string,
+  reason: string
+) {
+  const identity = await getHumanIdentity(env, projectId, identityId);
+  if (!identity) return { error: "human_identity_not_found", status: 404 };
+  if (identity.revoked_at) return { error: "human_identity_already_revoked", status: 409 };
+
+  if (identity.role === "owner" && await activeOwnerCount(env, projectId) <= 1) {
+    return { error: "last_active_owner_cannot_be_revoked", status: 409 };
+  }
+
+  const revokedAt = new Date().toISOString();
+  const query = new URLSearchParams({ id: `eq.${identityId}`, project_id: `eq.${projectId}` });
+  await db(env, `control_plane_identities?${query.toString()}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      revoked_at: revokedAt,
+      revoked_by: revokedBy,
+      revocation_reason: reason
+    })
+  });
+
+  await addAuditEvent(env, projectId, null, "human_identity_revoked", {
+    identityId,
+    identityName: identity.name,
+    role: identity.role,
+    revokedBy,
+    reason
+  });
+
+  return {
+    identityId,
+    name: identity.name,
+    role: identity.role,
+    revokedAt,
+    revokedBy,
+    reason,
+    status: 200
   };
 }
 
@@ -1464,7 +1591,7 @@ export default {
       return json({
         ok: true,
         service: "adnutum-api",
-        version: "1.2.0",
+        version: "1.3.0",
         persistence: Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.DEFAULT_PROJECT_ID),
         controlPlaneProtected: Boolean(env.CONTROL_PLANE_TOKEN),
         receiptSigningConfigured: Boolean(env.SIGNING_PRIVATE_JWK)
@@ -1522,11 +1649,11 @@ export default {
         }
 
         if (request.method === "GET" && url.pathname === "/v1/developer/human-identities/me") {
-          const identity = await authenticateHumanIdentity(request, env);
-          if (!identity || identity.projectId !== projectId) {
-            return json({ error: "human_identity_required" }, 401);
+          const authResult = await inspectHumanIdentityCredential(request, env);
+          if (!authResult.identity || authResult.identity.projectId !== projectId) {
+            return json({ error: authResult.error || "human_identity_required" }, 401);
           }
-          return json({ identity });
+          return json({ identity: authResult.identity });
         }
 
 
@@ -1538,6 +1665,35 @@ export default {
           if (!name) return json({ error: "identity_name_required" }, 400);
           if (!role) return json({ error: "identity_role_must_be_operator_or_owner" }, 400);
           return json(await createHumanIdentity(env, projectId, name, role), 201);
+        }
+
+        const rotateHumanIdentityMatch = url.pathname.match(/^\/v1\/developer\/human-identities\/([^/]+)\/rotate$/);
+        if (request.method === "POST" && rotateHumanIdentityMatch) {
+          const actor = await authenticateHumanIdentity(request, env);
+          const result = await rotateHumanIdentityToken(
+            env,
+            projectId,
+            decodeURIComponent(rotateHumanIdentityMatch[1]),
+            actor?.name || "control-plane-admin"
+          );
+          return "error" in result ? json({ error: result.error }, result.status) : json(result);
+        }
+
+        const revokeHumanIdentityMatch = url.pathname.match(/^\/v1\/developer\/human-identities\/([^/]+)\/revoke$/);
+        if (request.method === "POST" && revokeHumanIdentityMatch) {
+          let input: { reason?: string };
+          try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+          const reason = input.reason?.trim();
+          if (!reason) return json({ error: "identity_revocation_reason_required" }, 400);
+          const actor = await authenticateHumanIdentity(request, env);
+          const result = await revokeHumanIdentity(
+            env,
+            projectId,
+            decodeURIComponent(revokeHumanIdentityMatch[1]),
+            actor?.name || "control-plane-admin",
+            reason
+          );
+          return "error" in result ? json({ error: result.error }, result.status) : json(result);
         }
 
         if (request.method === "GET" && url.pathname === "/v1/developer/environments") {
@@ -1581,9 +1737,10 @@ export default {
           if (!signingKey) return json({ error: "signing_key_not_found" }, 404);
           if (signingKey.status === "revoked") return json({ error: "signing_key_already_revoked" }, 409);
 
-          const identity = await authenticateHumanIdentity(request, env);
+          const identityAuth = await inspectHumanIdentityCredential(request, env);
+          const identity = identityAuth.identity;
           if (!identity || identity.projectId !== projectId) {
-            return json({ error: "human_identity_required" }, 401);
+            return json({ error: identityAuth.error || "human_identity_required" }, 401);
           }
 
           const environment = await defaultEnvironment(env, projectId);
@@ -1748,7 +1905,11 @@ export default {
         if (denied) return denied;
         let input: HumanDecisionInput;
         try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
-        const identity = await authenticateHumanIdentity(request, env);
+        const identityAuth = await inspectHumanIdentityCredential(request, env);
+        if (identityAuth.error === "human_identity_revoked") {
+          return json({ error: "human_identity_revoked" }, 401);
+        }
+        const identity = identityAuth.identity;
         const result = await recordHumanDecision(
           env,
           env.DEFAULT_PROJECT_ID,
