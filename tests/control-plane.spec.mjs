@@ -163,7 +163,10 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
               token_prefix: "adn_human_",
               last4: "op01",
               last_used_at: null,
+              token_rotated_at: null,
               revoked_at: null,
+              revoked_by: null,
+              revocation_reason: null,
               created_at: "2026-10-03T00:00:00.000Z"
             },
             {
@@ -173,7 +176,10 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
               token_prefix: "adn_human_",
               last4: "ow01",
               last_used_at: null,
+              token_rotated_at: null,
               revoked_at: null,
+              revoked_by: null,
+              revocation_reason: null,
               created_at: "2026-10-03T00:00:01.000Z"
             }
           ]
@@ -309,6 +315,9 @@ test("Control Plane unlocks and Receipts + Developer tabs render without browser
   await expect(page.locator("#humanIdentityList")).toContainText("CI Operator");
   await expect(page.locator("#humanIdentityList")).toContainText("CI Owner");
   await expect(page.locator("#createHumanIdentityBtn")).toBeVisible();
+  await expect(page.locator("[data-rotate-human='human-operator-ci']")).toBeVisible();
+  await expect(page.locator("[data-revoke-human='human-operator-ci']")).toBeVisible();
+  await expect(page.locator("#stopActingIdentityBtn")).toBeVisible();
   await expect(page.locator("#copyHumanIdentityTokenBtn")).toBeHidden();
   await expect(page.locator("#dismissHumanIdentityTokenBtn")).toBeHidden();
   await expect(page.locator("[data-revoke-signing-key='adnutum-ci-key']")).toBeVisible();
