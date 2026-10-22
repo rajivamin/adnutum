@@ -32,14 +32,14 @@ The reviewer should observe:
 
 1. Muse requests authority through `authorize_action`.
 2. AD NŪTUM returns `approval_required`.
-3. A separate authorized human approves the request outside Muse.
+3. A separate authenticated human Owner approves the request outside Muse.
 4. Muse checks `get_authorization_status`.
 5. AD NŪTUM returns `authorized` and a signed authority receipt.
 6. Muse calls `verify_authority_receipt` immediately before the hypothetical deployment.
 7. Verification returns `valid: true`.
 8. A revoked or expired receipt returns `valid: false`.
 
-Muse is never given a Control Plane token or a human Owner credential, and Muse cannot approve its own request.
+For this review scenario, `deploy_production` requires an authenticated human Owner. Muse is never given a Control Plane token or a human Owner credential, and Muse cannot approve its own request.
 
 ## Authentication
 
