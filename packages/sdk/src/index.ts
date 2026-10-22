@@ -34,6 +34,25 @@ export interface AuthorizeResult {
   receipt?: AuthorityReceipt | null;
 }
 
+export type AuthorizationStatus =
+  | "pending_approval"
+  | "authorized"
+  | "approved"
+  | "rejected"
+  | "denied";
+
+export interface AuthorizationStatusResult {
+  requestId: string;
+  decision: AuthorizationDecision;
+  status: AuthorizationStatus;
+  policyId: string;
+  reason: string;
+  requiredApprover?: RequiredApprover | null;
+  environment: string;
+  createdAt: string;
+  receipt?: AuthorityReceipt | null;
+}
+
 export interface HumanDecisionInput {
   decision: HumanDecision;
   decidedBy?: string;
@@ -284,6 +303,12 @@ export class AdNutum {
       method: "POST",
       body: JSON.stringify(input)
     });
+  }
+
+  async getAuthorizationStatus(requestId: string): Promise<AuthorizationStatusResult> {
+    return this.request<AuthorizationStatusResult>(
+      `/v1/requests/${encodeURIComponent(requestId)}/status`
+    );
   }
 
   async decide(requestId: string, input: HumanDecisionInput) {
