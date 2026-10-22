@@ -2,6 +2,12 @@
 
 All notable public release changes to AD NŪTUM are recorded here.
 
+## Unreleased
+
+- Require an authenticated human Owner for production-deployment approval.
+- Enforce Owner-role requirements server-side for Owner-gated authorization decisions.
+
+
 ## 1.4.0 - Connector submission hardening
 
 - Add an API-key-authenticated authorization-status endpoint for external agents.
