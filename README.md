@@ -39,7 +39,7 @@ execution-time verification
 npm install @adnutum/sdk
 ```
 
-> The npm package is being prepared for its first public release. Until publication, use the repository workspace package.
+> Published on npm as [`@adnutum/sdk`](https://www.npmjs.com/package/@adnutum/sdk).
 
 ## Five-minute example
 
