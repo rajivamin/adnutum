@@ -1,0 +1,570 @@
+openapi: 3.1.0
+info:
+  title: AD NŪTUM API
+  version: 1.3.1
+  description: |
+    Programmable authority for AI agents.
+
+    AD NŪTUM evaluates proposed actions, returns allow / deny / approval_required,
+    issues authority receipts when authority is granted, and verifies those grants
+    immediately before execution.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: https://your-adnutum-worker.example.workers.dev
+    description: Replace with your AD NŪTUM deployment
+tags:
+  - name: Authorization
+  - name: Verification
+  - name: Receipts
+  - name: Requests
+  - name: Trust
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Trust]
+      summary: Get trusted public receipt-verification keys
+      operationId: getVerificationKeys
+      security: []
+      responses:
+        "200":
+          description: Trusted key set and signing lifecycle metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationKeySet"
+
+  /v1/authorize:
+    post:
+      tags: [Authorization]
+      summary: Request authority for an agent action
+      description: |
+        Evaluates the proposed action against the policy for the project and environment
+        associated with the supplied API key. An allow decision may include an authority
+        receipt immediately. An approval_required decision identifies the human approval
+        role required before authority can be issued.
+      operationId: authorize
+      security:
+        - AgentApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizeInput"
+      responses:
+        "200":
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorizeResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/verify:
+    post:
+      tags: [Verification]
+      summary: Verify authority immediately before execution
+      description: |
+        Verifies current receipt state, delegation ancestry, agent, action, environment,
+        material execution scope, expiration, revocation, and signed-receipt integrity
+        when a signature is present.
+      operationId: verifyReceipt
+      security:
+        - AgentApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyReceiptInput"
+      responses:
+        "200":
+          description: Verification result. Invalid authority is normally represented by valid=false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyReceiptResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/requests/{requestId}:
+    get:
+      tags: [Requests]
+      summary: Inspect an authorization request
+      operationId: getAuthorizationRequest
+      security:
+        - ControlPlaneToken: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Request, human decisions, and audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request, approvals, events]
+                properties:
+                  request:
+                    type: object
+                    additionalProperties: true
+                  approvals:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/requests/{requestId}/decision:
+    post:
+      tags: [Requests]
+      summary: Approve or reject an authorization request
+      description: |
+        Records a human decision. Governed trust actions can additionally require an
+        authenticated Owner identity and separation of duties.
+      operationId: decideAuthorizationRequest
+      security:
+        - ControlPlaneToken: []
+          HumanIdentityToken: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [approved, rejected]
+                note:
+                  type: string
+      responses:
+        "200":
+          description: Recorded decision and any resulting receipt or governed execution
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/receipts:
+    get:
+      tags: [Receipts]
+      summary: List authority receipts
+      operationId: listReceipts
+      security:
+        - ControlPlaneToken: []
+      responses:
+        "200":
+          description: Receipt collection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipts]
+                properties:
+                  receipts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuthorityReceipt"
+
+  /v1/receipts/{receiptId}:
+    get:
+      tags: [Receipts]
+      summary: Get one authority receipt
+      operationId: getReceipt
+      security:
+        - ControlPlaneToken: []
+      parameters:
+        - $ref: "#/components/parameters/ReceiptId"
+      responses:
+        "200":
+          description: Authority receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt]
+                properties:
+                  receipt:
+                    $ref: "#/components/schemas/AuthorityReceipt"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/receipts/{receiptId}/delegate:
+    post:
+      tags: [Receipts]
+      summary: Delegate an active authority receipt
+      description: |
+        Creates a narrower child grant for another agent. The child inherits the parent's
+        action, environment, and scope and cannot outlive the parent.
+      operationId: delegateReceipt
+      security:
+        - ControlPlaneToken: []
+      parameters:
+        - $ref: "#/components/parameters/ReceiptId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delegateToAgentId]
+              properties:
+                delegateToAgentId:
+                  type: string
+                expiresAt:
+                  type: string
+                  format: date-time
+                issuedBy:
+                  type: string
+      responses:
+        "200":
+          description: Delegated child receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt]
+                properties:
+                  receipt:
+                    $ref: "#/components/schemas/AuthorityReceipt"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/receipts/{receiptId}/revoke:
+    post:
+      tags: [Receipts]
+      summary: Revoke an authority receipt
+      operationId: revokeReceipt
+      security:
+        - ControlPlaneToken: []
+      parameters:
+        - $ref: "#/components/parameters/ReceiptId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revokedBy:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Revocation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  revoked:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+components:
+  securitySchemes:
+    AgentApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: AD NŪTUM API key
+      description: Environment-scoped API key such as adn_dev_, adn_stage_, or adn_live_.
+    ControlPlaneToken:
+      type: apiKey
+      in: header
+      name: x-control-plane-token
+      description: Bootstrap/admin Control Plane credential.
+    HumanIdentityToken:
+      type: apiKey
+      in: header
+      name: x-control-plane-identity-token
+      description: Individual human Operator or Owner credential.
+
+  parameters:
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+    ReceiptId:
+      name: receiptId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing, invalid, or revoked credential
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated identity lacks the required authority
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Requested state transition is not allowed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    AuthorizeInput:
+      type: object
+      required: [agentId, action]
+      properties:
+        agentId:
+          type: string
+        action:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        context:
+          type: object
+          additionalProperties: true
+
+    AuthorizeResult:
+      type: object
+      required: [decision, policyId, reason, requestId, createdAt]
+      properties:
+        decision:
+          type: string
+          enum: [allow, deny, approval_required]
+        policyId:
+          type: string
+        reason:
+          type: string
+        requestId:
+          type: string
+        requiredApprover:
+          type: string
+          enum: [manager, owner, admin, editor, engineering_lead]
+        createdAt:
+          type: string
+          format: date-time
+        receipt:
+          oneOf:
+            - $ref: "#/components/schemas/AuthorityReceipt"
+            - type: "null"
+
+    VerifyReceiptInput:
+      type: object
+      required: [receiptId, agentId, action]
+      properties:
+        receiptId:
+          type: string
+        agentId:
+          type: string
+        action:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        context:
+          type: object
+          additionalProperties: true
+
+    VerifyReceiptResult:
+      type: object
+      required: [valid, reason, verifiedAt]
+      properties:
+        valid:
+          type: boolean
+        reason:
+          type: string
+        receiptId:
+          type: string
+        agentId:
+          type: string
+        action:
+          type: string
+        environment:
+          type: string
+        scope:
+          type: object
+          additionalProperties: true
+        expiresAt:
+          type: string
+          format: date-time
+        delegated:
+          type: boolean
+        verifiedAt:
+          type: string
+          format: date-time
+
+    AuthorityReceipt:
+      type: object
+      required:
+        - id
+        - project_id
+        - agent_id
+        - action
+        - scope
+        - issued_by
+        - issued_at
+        - expires_at
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        authorization_request_id:
+          type: [string, "null"]
+        parent_receipt_id:
+          type: [string, "null"]
+        agent_id:
+          type: string
+        environment_id:
+          type: [string, "null"]
+        action:
+          type: string
+        scope:
+          type: object
+          additionalProperties: true
+        issued_by:
+          type: string
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_by:
+          type: [string, "null"]
+        revocation_reason:
+          type: [string, "null"]
+        signed_payload:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+        signature:
+          type: [string, "null"]
+        signing_key_id:
+          type: [string, "null"]
+        signature_algorithm:
+          type: [string, "null"]
+        state:
+          type: string
+          enum: [active, expired, revoked]
+
+    VerificationKeyLifecycle:
+      type: object
+      required: [kid, status, algorithm, activatedAt]
+      properties:
+        kid:
+          type: string
+        status:
+          type: string
+          enum: [active, retired, revoked]
+        algorithm:
+          type: string
+        activatedAt:
+          type: string
+          format: date-time
+        retiredAt:
+          type: [string, "null"]
+          format: date-time
+
+    VerificationKeySet:
+      type: object
+      required: [keys, keyLifecycle, revokedKeyIds, signingConfigured]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        keyLifecycle:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerificationKeyLifecycle"
+        revokedKeyIds:
+          type: array
+          items:
+            type: string
+        signingConfigured:
+          type: boolean
+        signingOperational:
+          type: boolean
+        activeKeyId:
+          type: [string, "null"]
