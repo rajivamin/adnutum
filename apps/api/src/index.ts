@@ -1030,6 +1030,69 @@ async function getRequest(env: Env, projectId: string, rawId: string) {
   return { request: requests[0], approvals, events };
 }
 
+async function getAuthorizationStatus(env: Env, auth: AuthContext, rawId: string) {
+  if (!auth.environmentId) return null;
+
+  const id = cleanRequestId(rawId);
+  const requestQuery = new URLSearchParams({
+    id: `eq.${id}`,
+    project_id: `eq.${auth.projectId}`,
+    environment_id: `eq.${auth.environmentId}`,
+    select: "id,decision,policy_id,reason,required_approver,created_at,environment_id",
+    limit: "1"
+  });
+  const approvalQuery = new URLSearchParams({
+    authorization_request_id: `eq.${id}`,
+    select: "decision,created_at",
+    order: "created_at.asc",
+    limit: "1"
+  });
+  const receiptQuery = new URLSearchParams({
+    authorization_request_id: `eq.${id}`,
+    project_id: `eq.${auth.projectId}`,
+    environment_id: `eq.${auth.environmentId}`,
+    select: "*",
+    limit: "1"
+  });
+
+  const [requests, approvals, receipts] = await Promise.all([
+    db<Array<Record<string, any>>>(env, `authorization_requests?${requestQuery.toString()}`),
+    db<Array<Record<string, any>>>(env, `approval_decisions?${approvalQuery.toString()}`),
+    db<Array<Record<string, any>>>(env, `authority_receipts?${receiptQuery.toString()}`)
+  ]);
+
+  const requestRow = requests[0];
+  if (!requestRow) return null;
+
+  const approval = approvals[0] ?? null;
+  const receipt = receipts[0] ?? null;
+
+  let status: "pending_approval" | "authorized" | "approved" | "rejected" | "denied";
+  if (String(requestRow.decision) === "deny") {
+    status = "denied";
+  } else if (String(requestRow.decision) === "allow") {
+    status = receipt ? "authorized" : "approved";
+  } else if (approval?.decision === "rejected") {
+    status = "rejected";
+  } else if (approval?.decision === "approved") {
+    status = receipt ? "authorized" : "approved";
+  } else {
+    status = "pending_approval";
+  }
+
+  return {
+    requestId: `req_${id}`,
+    decision: String(requestRow.decision),
+    status,
+    policyId: String(requestRow.policy_id),
+    reason: String(requestRow.reason),
+    requiredApprover: requestRow.required_approver ? String(requestRow.required_approver) : null,
+    environment: auth.environmentSlug,
+    createdAt: String(requestRow.created_at),
+    receipt: receipt ? { ...receipt, state: receiptState(receipt) } : null
+  };
+}
+
 async function listRequests(env: Env, projectId: string, limit: number) {
   const query = new URLSearchParams({
     project_id: `eq.${projectId}`,
@@ -1889,6 +1952,14 @@ export default {
         try { input = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
         const result = await revokeReceipt(env, env.DEFAULT_PROJECT_ID, revokeReceiptMatch[1], input);
         return json(result, "status" in result ? result.status : 200);
+      }
+
+      const requestStatusMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)\/status$/);
+      if (request.method === "GET" && requestStatusMatch) {
+        const auth = await authenticateApiKey(request, env);
+        if (!auth) return json({ error: "api_key_required" }, 401);
+        const result = await getAuthorizationStatus(env, auth, requestStatusMatch[1]);
+        return result ? json(result) : json({ error: "request_not_found" }, 404);
       }
 
       const requestMatch = url.pathname.match(/^\/v1\/requests\/([^/]+)$/);

@@ -2,13 +2,13 @@
 
 ## Supported version
 
-AD NŪTUM is currently preparing its first public release. Security fixes are applied to the latest release line.
+Security fixes are applied to the latest public release line.
 
 ## Reporting a vulnerability
 
 Please do not open a public GitHub issue for a suspected vulnerability that could expose credentials, bypass authorization, forge authority receipts, compromise signing keys, or weaken approval/separation-of-duties controls.
 
-Until a dedicated security mailbox is published, contact the repository owner privately through GitHub and include:
+Report security issues privately to **dev@rumblefleastudios.com** with the subject prefix `[AD NŪTUM SECURITY]`, or contact the repository owner privately through GitHub. Include:
 
 - a concise description of the issue,
 - affected endpoint or component,
@@ -62,3 +62,8 @@ Self-hosters are responsible for:
 - validating policies for their own use cases.
 
 AD NŪTUM is authorization infrastructure, not a substitute for application authentication, endpoint security, identity proofing, fraud controls, or payment security.
+
+
+## Connector incident response
+
+For a hosted connector integration, incidents involving connector user data are handled under the applicable connector terms and incident-notification obligations. Access credentials should be revoked promptly when compromise is suspected, and affected project-scoped data should be deleted or rendered inaccessible when required.

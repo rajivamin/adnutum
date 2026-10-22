@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AD NŪTUM API
-  version: 1.3.1
+  version: 1.4.0
   description: |
     Programmable authority for AI agents.
 
@@ -107,6 +107,32 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /v1/requests/{requestId}/status:
+    get:
+      tags: [Requests]
+      summary: Get agent-safe authorization status
+      description: |
+        Returns a minimal status view for an authorization request using the same
+        environment-scoped API key that created it. The request must belong to the
+        same project and environment as the calling key. Human identity details,
+        approval notes, audit history, and Control Plane credentials are not exposed.
+      operationId: getAuthorizationStatus
+      security:
+        - AgentApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Current authorization status and resulting receipt when available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorizationStatusResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/requests/{requestId}:
     get:
@@ -414,6 +440,35 @@ components:
         requiredApprover:
           type: string
           enum: [manager, owner, admin, editor, engineering_lead]
+        createdAt:
+          type: string
+          format: date-time
+        receipt:
+          oneOf:
+            - $ref: "#/components/schemas/AuthorityReceipt"
+            - type: "null"
+
+    AuthorizationStatusResult:
+      type: object
+      required: [requestId, decision, status, policyId, reason, environment, createdAt]
+      properties:
+        requestId:
+          type: string
+        decision:
+          type: string
+          enum: [allow, deny, approval_required]
+        status:
+          type: string
+          enum: [pending_approval, authorized, approved, rejected, denied]
+        policyId:
+          type: string
+        reason:
+          type: string
+        requiredApprover:
+          type: [string, "null"]
+          enum: [manager, owner, admin, editor, engineering_lead, null]
+        environment:
+          type: string
         createdAt:
           type: string
           format: date-time

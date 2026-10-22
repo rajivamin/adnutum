@@ -2,6 +2,15 @@
 
 All notable public release changes to AD NŪTUM are recorded here.
 
+## 1.4.0 - Connector submission hardening
+
+- Add an API-key-authenticated authorization-status endpoint for external agents.
+- Scope status polling to the same project and environment as the calling API key.
+- Add SDK support for authorization-status polling.
+- Add Muse Connector documentation with tool classifications, reviewer flow, errors, and rate-limit disclosure.
+- Add public privacy, product-terms, and data-handling documentation.
+- Refresh release and security documentation for the public SDK.
+
 ## 1.3.1 - Release hardening
 
 - Package the TypeScript SDK as compiled JavaScript with declaration files.

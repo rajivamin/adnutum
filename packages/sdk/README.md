@@ -45,6 +45,20 @@ if (result.decision === "allow") {
 }
 ```
 
+## Resume after human approval
+
+When `authorize()` returns `approval_required`, an external agent can safely poll the request without receiving Control Plane credentials:
+
+```ts
+const status = await adnutum.getAuthorizationStatus(result.requestId);
+
+if (status.status === "authorized" && status.receipt) {
+  console.log("Authority issued", status.receipt);
+}
+```
+
+The status endpoint is scoped to the project and environment associated with the API key.
+
 ## Verify authority at execution time
 
 ```ts
@@ -82,6 +96,7 @@ Offline verification proves signature authenticity and signed-payload integrity.
 ## Core methods
 
 - `authorize(input)`
+- `getAuthorizationStatus(requestId)`
 - `verifyReceipt(input)`
 - `getVerificationKeys()`
 - `getRequest(requestId)`
