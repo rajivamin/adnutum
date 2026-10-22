@@ -827,7 +827,7 @@ function evaluatePublishContent(input: AuthorizeInput): Omit<AuthorizationResult
 }
 
 function evaluateProductionDeploy(): Omit<AuthorizationResult, "requestId"> {
-  return policyResult("approval_required", "production-deploy-v1", "Production deployments require engineering lead approval.", "engineering_lead");
+  return policyResult("approval_required", "production-deploy-v1", "Production deployments require Owner approval.", "owner");
 }
 
 function evaluateSigningKeyRevocation(input: AuthorizeInput): Omit<AuthorizationResult, "requestId"> {
@@ -1134,15 +1134,17 @@ async function recordHumanDecision(
   }
 
   const requestRowForIdentity = existing.request as Record<string, any>;
-  if (String(requestRowForIdentity.action) === "revoke_signing_key") {
+  if (String(requestRowForIdentity.required_approver || "") === "owner") {
     if (!identity) return { error: "human_identity_required", status: 401 };
     if (identity.role !== "owner") return { error: "owner_identity_required", status: 403 };
-    if (
-      requestRowForIdentity.requested_by_identity_id &&
-      String(requestRowForIdentity.requested_by_identity_id) === identity.id
-    ) {
-      return { error: "separation_of_duties_violation", status: 409 };
-    }
+  }
+
+  if (
+    String(requestRowForIdentity.action) === "revoke_signing_key" &&
+    requestRowForIdentity.requested_by_identity_id &&
+    String(requestRowForIdentity.requested_by_identity_id) === identity?.id
+  ) {
+    return { error: "separation_of_duties_violation", status: 409 };
   }
 
   await db(env, "approval_decisions", {
