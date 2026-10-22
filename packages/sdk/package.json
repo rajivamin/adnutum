@@ -1,9 +1,53 @@
 {
   "name": "@adnutum/sdk",
-  "version": "1.3.0",
+  "version": "1.3.1",
+  "description": "Programmable authority for AI agents: evaluate actions, require approval, and verify signed authority receipts.",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "ai-agents",
+    "authorization",
+    "agentic-ai",
+    "security",
+    "human-in-the-loop",
+    "policy",
+    "approval",
+    "receipts",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rajivamin/adnutum.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/rajivamin/adnutum#readme",
+  "bugs": {
+    "url": "https://github.com/rajivamin/adnutum/issues"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
