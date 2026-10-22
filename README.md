@@ -140,6 +140,17 @@ A delegated child receipt:
 - cannot outlive its parent,
 - becomes invalid if its parent expires or is revoked.
 
+## Resume after human approval
+
+External agents can check the status of their own authorization request with the same environment-scoped API key:
+
+```http
+GET /v1/requests/{requestId}/status
+Authorization: Bearer adn_...
+```
+
+The endpoint returns only the request's policy result, current authorization status, environment, and resulting receipt when one exists. It does not expose approval notes, audit history, human identity details, or Control Plane credentials, and the request must belong to the same project and environment as the API key.
+
 ## Execution-time verification
 
 Downstream systems can verify authority immediately before performing an action:
@@ -251,11 +262,17 @@ Runtime configuration includes:
 
 Run the current additive schema in [`supabase/schema.sql`](./supabase/schema.sql).
 
-## Security
+## Security and data handling
 
 Do not expose API keys, Control Plane tokens, human identity credentials, Supabase service credentials, or private signing keys in source control or browser applications.
 
-See [SECURITY.md](./SECURITY.md) for vulnerability reporting and security boundaries.
+See:
+
+- [Security policy](./SECURITY.md)
+- [Privacy notice](./PRIVACY.md)
+- [Product terms](./TERMS.md)
+- [Data handling](./docs/data-handling.md)
+- [Muse Connector submission guide](./docs/muse-connector.md)
 
 ## Development
 
@@ -282,7 +299,7 @@ CI runs TypeScript typechecking, Control Plane structural validation, SDK packag
 
 ## Status
 
-AD NŪTUM is a small, working authorization infrastructure project preparing for its first public SDK release and external connector review.
+AD NŪTUM is a working authorization infrastructure project with a public TypeScript SDK and an external connector review track.
 
 It is not an identity provider, payment processor, or substitute for an application's own authentication and authorization design.
 
