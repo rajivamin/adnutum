@@ -32,6 +32,12 @@ jobs:
       - name: Verify Control Plane structure
         run: npm run check:control-plane
 
+      - name: Build SDK
+        run: npm run build:sdk
+
+      - name: Verify npm package contents
+        run: npm run pack:sdk:check
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
